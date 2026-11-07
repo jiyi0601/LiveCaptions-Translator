@@ -1,4 +1,5 @@
 using System.Globalization;
+using LiveCaptionsTranslator.speech;
 using System.IO;
 using System.Text;
 using CsvHelper;
@@ -36,6 +37,17 @@ public sealed class HistoryStore
             command.CommandText = "ALTER TABLE TranslationHistory ADD COLUMN ParagraphId INTEGER";
             command.ExecuteNonQuery();
         }
+        foreach (var column in new[] { "SessionId TEXT", "SourceKey TEXT", "SpeakerId TEXT", "SpeakerState INTEGER", "AudioStart REAL", "AudioEnd REAL" })
+        {
+            if (columns.Contains(column.Split(' ')[0])) continue;
+            command.CommandText = "ALTER TABLE TranslationHistory ADD COLUMN " + column;
+            command.ExecuteNonQuery();
+        }
+        command.CommandText = @"CREATE UNIQUE INDEX IF NOT EXISTS IX_History_SpeechKey
+            ON TranslationHistory(SessionId,SourceKey) WHERE SessionId IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS SpeakerDrafts (SessionId TEXT PRIMARY KEY, Text TEXT NOT NULL,
+            Language TEXT NOT NULL, Api TEXT NOT NULL, AudioStart REAL, AudioEnd REAL);";
+        command.ExecuteNonQuery();
         command.CommandText = "CREATE INDEX IF NOT EXISTS IX_TranslationHistory_Paragraph ON TranslationHistory(COALESCE(ParagraphId,Id),Id)";
         command.ExecuteNonQuery();
     }
@@ -46,12 +58,21 @@ public sealed class HistoryStore
         return connection;
     }
     public async Task<TranslationHistoryEntry> CreateAsync(string source, string language, string api,
-        string translation = "", long? paragraphId = null)
+        string translation = "", long? paragraphId = null, SpeechInfo? speech = null, SpeechDraft? remainingDraft = null)
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        if (speech != null)
+        {
+            command.CommandText = "SELECT * FROM TranslationHistory WHERE SessionId=$session AND SourceKey=$key";
+            command.Parameters.AddWithValue("$session", speech.SessionId);
+            command.Parameters.AddWithValue("$key", speech.SourceKey);
+            using (var existing = await command.ExecuteReaderAsync())
+                if (await existing.ReadAsync()) return ReadRow(existing);
+            command.Parameters.Clear();
+        }
         if (paragraphId.HasValue)
         {
             command.CommandText = "SELECT COUNT(*) FROM TranslationHistory WHERE Id=$parent";
@@ -81,11 +102,27 @@ public sealed class HistoryStore
             command.Parameters.AddWithValue("$id", id);
             await command.ExecuteNonQueryAsync();
         }
+        if (speech != null)
+        {
+            command.Parameters.Clear();
+            command.CommandText = @"UPDATE TranslationHistory SET SessionId=$session, SourceKey=$key,
+                SpeakerId=$speaker, SpeakerState=$state, AudioStart=$start, AudioEnd=$end WHERE Id=$id";
+            command.Parameters.AddWithValue("$session", speech.SessionId);
+            command.Parameters.AddWithValue("$key", speech.SourceKey);
+            command.Parameters.AddWithValue("$speaker", (object?)speech.SpeakerId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$state", (int)speech.State);
+            command.Parameters.AddWithValue("$start", speech.Start);
+            command.Parameters.AddWithValue("$end", speech.End);
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync();
+        }
+        if (remainingDraft != null) await SaveDraft(connection, transaction, remainingDraft);
         transaction.Commit();
         var local = DateTimeOffset.FromUnixTimeSeconds(time).LocalDateTime;
         return new()
         {
             Id = id,
+            Speech = speech,
             ParagraphId = paragraphId.Value,
             Version = version,
             Timestamp = local.ToString("yyyy-MM-dd HH:mm"),
@@ -161,10 +198,10 @@ public sealed class HistoryStore
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM TranslationHistory";
+        command.CommandText = "DELETE FROM TranslationHistory; DELETE FROM SpeakerDrafts;";
         await command.ExecuteNonQueryAsync();
     }
-    public async Task ExportAsync(string path)
+    public async Task ExportAsync(string path, bool includeSpeakers = false)
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
@@ -173,6 +210,16 @@ public sealed class HistoryStore
         await using var writer = new StreamWriter(path, false, new UTF8Encoding(true));
         using var csv = new CsvWriter(writer, CultureInfo.InvariantCulture);
         csv.WriteHeader<TranslationHistoryEntry>();
+        if (includeSpeakers) { csv.WriteField("SessionId"); csv.WriteField("Speaker"); }
+        void WriteParagraph(ReaderEntry value)
+        {
+            csv.WriteRecord(value.ExportEntry());
+            if (includeSpeakers)
+            {
+                csv.WriteField(value.ExportEntry().Speech?.SessionId ?? "");
+                csv.WriteField(value.Speaker);
+            }
+        }
         await csv.NextRecordAsync();
         ReaderEntry? paragraph = null;
         while (await reader.ReadAsync())
@@ -180,7 +227,7 @@ public sealed class HistoryStore
             var entry = ReadRow(reader);
             if (paragraph != null && paragraph.Id != entry.GroupId)
             {
-                csv.WriteRecord(paragraph.ExportEntry());
+                WriteParagraph(paragraph);
                 await csv.NextRecordAsync();
                 paragraph = null;
             }
@@ -189,9 +236,47 @@ public sealed class HistoryStore
         }
         if (paragraph != null)
         {
-            csv.WriteRecord(paragraph.ExportEntry());
+            WriteParagraph(paragraph);
             await csv.NextRecordAsync();
         }
+    }
+    public async Task SaveDraftAsync(SpeechDraft draft)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        await SaveDraft(connection, transaction, draft);
+        transaction.Commit();
+    }
+    private static async Task SaveDraft(SqliteConnection connection, SqliteTransaction transaction, SpeechDraft draft)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.Parameters.AddWithValue("$session", draft.SessionId);
+        if (string.IsNullOrWhiteSpace(draft.Text))
+            command.CommandText = "DELETE FROM SpeakerDrafts WHERE SessionId=$session";
+        else
+        {
+            command.CommandText = @"INSERT INTO SpeakerDrafts VALUES($session,$text,$language,$api,$start,$end)
+                ON CONFLICT(SessionId) DO UPDATE SET Text=$text,Language=$language,Api=$api,AudioStart=$start,AudioEnd=$end";
+            command.Parameters.AddWithValue("$text", draft.Text);
+            command.Parameters.AddWithValue("$language", draft.Language);
+            command.Parameters.AddWithValue("$api", draft.Api);
+            command.Parameters.AddWithValue("$start", draft.Start);
+            command.Parameters.AddWithValue("$end", draft.End);
+        }
+        await command.ExecuteNonQueryAsync();
+    }
+    public async Task<List<SpeechDraft>> ReadDraftsAsync()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM SpeakerDrafts ORDER BY rowid";
+        using var reader = await command.ExecuteReaderAsync();
+        var result = new List<SpeechDraft>();
+        while (await reader.ReadAsync())
+            result.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                reader.GetDouble(4), reader.GetDouble(5)));
+        return result;
     }
     private static async Task<List<TranslationHistoryEntry>> ReadRows(SqliteCommand command)
     {
@@ -208,6 +293,10 @@ public sealed class HistoryStore
             : DateTime.TryParse(time, out var legacy) ? legacy : DateTime.MinValue;
         return new()
         {
+            Speech = reader["SessionId"] is string session ? new SpeechInfo(session,
+                reader["SourceKey"]?.ToString() ?? "", reader["SpeakerId"] is string speaker ? speaker : null,
+                reader["SpeakerState"] is long state ? (SpeakerState)state : SpeakerState.Unknown,
+                reader["AudioStart"] is double start ? start : 0, reader["AudioEnd"] is double end ? end : 0) : null,
             Id = reader.GetInt64(reader.GetOrdinal("Id")),
             ParagraphId = reader["ParagraphId"] is long id ? id : reader.GetInt64(reader.GetOrdinal("Id")),
             Version = reader.GetInt64(reader.GetOrdinal("Version")),

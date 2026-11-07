@@ -11,6 +11,8 @@ public sealed class ReaderEntry : INotifyPropertyChanged
     public long Id { get; }
     private TranslationHistoryEntry First => parts.Values.First();
     public string Time => First.TimestampFull;
+    public string Speaker => First.SpeakerLabel;
+    public bool HasSpeaker => Speaker.Length > 0;
     public string Source => string.Join(" ", parts.Values.Select(p => p.SourceText).Where(s => s.Length > 0));
     private static bool Error(TranslationHistoryEntry p) => p.TranslatedText.Contains("[ERROR]");
     private static bool Paused(TranslationHistoryEntry p) => p.TranslatedText is "[Paused]" or "N/A";
@@ -43,10 +45,10 @@ public sealed class ReaderEntry : INotifyPropertyChanged
         if (value.GroupId != Id) throw new ArgumentException("Fragment belongs to another paragraph.", nameof(value));
         if (parts.TryGetValue(value.Id, out var old) && value.Version < old.Version) return;
         parts[value.Id] = value;
-        foreach (var name in new[] { nameof(Time), nameof(Source), nameof(Translation), nameof(Status), nameof(HasStatus), nameof(DisplayTranslation) })
+        foreach (var name in new[] { nameof(Time), nameof(Speaker), nameof(HasSpeaker), nameof(Source), nameof(Translation), nameof(Status), nameof(HasStatus), nameof(DisplayTranslation) })
             PropertyChanged?.Invoke(this, new(name));
     }
-    public string CopyText => Time + Environment.NewLine + Source + Environment.NewLine
+    public string CopyText => Time + (HasSpeaker ? " · " + Speaker : "") + Environment.NewLine + Source + Environment.NewLine
         + DisplayTranslation + (HasStatus ? Environment.NewLine + Status : "");
     public TranslationHistoryEntry ExportEntry() => First with
     {

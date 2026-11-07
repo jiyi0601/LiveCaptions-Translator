@@ -41,7 +41,7 @@ public sealed class TranscriptEngine : IAsyncDisposable
             long paragraphKey = update.ParagraphKey == 0 ? update.Key : update.ParagraphKey;
             long? paragraphId = paragraphIds.TryGetValue(paragraphKey, out long parent) ? parent : null;
             var entry = old == null
-                ? await store.CreateAsync(update.Text, language, api, paragraphId: paragraphId)
+                ? await store.CreateAsync(update.Text, language, api, paragraphId: paragraphId, speech: update.Speech, remainingDraft: update.RemainingDraft)
                 : old.Entry with { SourceText = update.Text, TranslatedText = CanKeepTranslation(old.Entry, update.Text, language, api) ? old.Entry.TranslatedText : "", TargetLanguage = language, ApiUsed = api, Version = update.Revision * 2L };
             paragraphIds[paragraphKey] = entry.GroupId;
             if (paused) entry = entry with { TranslatedText = "[Paused]", ApiUsed = "LogOnly" };

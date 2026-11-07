@@ -1,0 +1,83 @@
+{
+  "Date": "2026-11-07",
+  "Status": "experimental-not-accepted",
+  "Cpu": "Intel Core Ultra 9 185H",
+  "RegressionPassed": 66,
+  "RegressionFailed": 0,
+  "ManifestSha256": "F0A380EF720E4F2F74D29C79F4F3C9E9AC3717F07E9862FBC259FB2B53886058",
+  "Scenarios": [
+    {
+      "Scenario": "clean-three",
+      "AudioSeconds": 73.915,
+      "AudioSha256": "238AF6872495AB658C02AFA81076F8739A5E14129BEDF327A75E49AE5007C26F",
+      "SpeakerAccuracy": 0.9605263157894737,
+      "ExpectedFrames": 532,
+      "CorrectFrames": 511,
+      "UnknownFrames": 21,
+      "CommitLatencyP95Seconds": 7.000000076293944
+    },
+    {
+      "Scenario": "clean-two",
+      "AudioSeconds": 51.325,
+      "AudioSha256": "62238EAE880F8C387123DFF6F92940A660D9ADA87D33F22060F44F1BD3DA1A14",
+      "SpeakerAccuracy": 0.9619565217391305,
+      "ExpectedFrames": 368,
+      "CorrectFrames": 354,
+      "UnknownFrames": 14,
+      "CommitLatencyP95Seconds": 6.900000267028808
+    },
+    {
+      "Scenario": "same-speaker",
+      "AudioSeconds": 29.52,
+      "AudioSha256": "83A7959EAC106CE90EDFD18519DA27462E5669D0093BFEAA4F1C19C39CDF39DB",
+      "SpeakerAccuracy": 0.916256157635468,
+      "ExpectedFrames": 203,
+      "CorrectFrames": 186,
+      "UnknownFrames": 17,
+      "CommitLatencyP95Seconds": 6.780000381469728
+    },
+    {
+      "Scenario": "long-pauses",
+      "AudioSeconds": 53.92,
+      "AudioSha256": "2ADDD754F1DDE68468FC98BB80A739E60D37B4C2142DA65C8F6E7252FA313C3B",
+      "SpeakerAccuracy": 0.9565217391304348,
+      "ExpectedFrames": 230,
+      "CorrectFrames": 220,
+      "UnknownFrames": 10,
+      "CommitLatencyP95Seconds": 6.800000076293946
+    },
+    {
+      "Scenario": "rapid-turns",
+      "AudioSeconds": 23.2,
+      "AudioSha256": "7A8906C67DE833630B8835D89B35A148818842DF3205F44DCF63E82A28E4ADD3",
+      "SpeakerAccuracy": 0.49612403100775193,
+      "ExpectedFrames": 129,
+      "CorrectFrames": 64,
+      "UnknownFrames": 22,
+      "CommitLatencyP95Seconds": 6.999999885559083
+    },
+    {
+      "Scenario": "overlap",
+      "AudioSeconds": 32.365,
+      "AudioSha256": "24DF9092D8C05B3ADF63B9BD816D18EDA7781794C50F03868B59E6CEEFBA4D93",
+      "SpeakerAccuracy": 0.7400881057268722,
+      "ExpectedFrames": 227,
+      "CorrectFrames": 168,
+      "UnknownFrames": 15,
+      "CommitLatencyP95Seconds": 6.900000648498535
+    }
+  ],
+  "Soak": {
+    "AudioSeconds": 1800.06,
+    "WallSeconds": 1800.2632771,
+    "SpeakerCount": 3,
+    "MaxWorkingMiB": 490.81640625,
+    "ExpectedFrames": 12964,
+    "CorrectFrames": 12265,
+    "UnknownFrames": 696,
+    "SpeakerAccuracy": 0.9460814563406356,
+    "CommitLatencyP95Seconds": 6.937698890734964,
+    "MaximumSampledLagSeconds": 0.42332360000000335,
+    "Method": "Realtime paced file input; actual WASAPI tested separately; not a 30-minute physical playback run."
+  }
+}

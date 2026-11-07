@@ -13,7 +13,7 @@ public static class SQLiteHistoryLogger
     public static Task ExportToCSV(string path, CancellationToken token = default) => Store.ExportAsync(path);
     public static async Task ClearHistory(CancellationToken token = default)
     {
-        await Store.ClearAsync();
+        await Translator.ClearHistoryAsync();
         HistoryCleared?.Invoke();
     }
 }

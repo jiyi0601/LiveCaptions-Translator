@@ -45,6 +45,15 @@
         AutomationProperties.AutomationId="ParagraphPause" ToolTip="原文超过这段时间没有更新，下一次发言另起一条。已达到每条目标长度时，仍可在句末或约 1.5 秒停顿处分段。"/>
      </StackPanel>
     </WrapPanel>
+    <WrapPanel Margin="0,3,0,0">
+     <CheckBox x:Name="SpeakerToggle" Content="区分说话人" Foreground="#E8EEF4" Margin="0,4,12,6"
+        ToolTip="本地测试功能：快速接话、很短的回应和同时讲话时可能误判。取消勾选可返回 Windows 字幕。"
+        Checked="SpeakerToggle_Changed" Unchecked="SpeakerToggle_Changed" AutomationProperties.AutomationId="SpeakerToggle"/>
+     <ComboBox x:Name="SpeakerDeviceBox" Width="215" Margin="0,0,8,6" DisplayMemberPath="Name"
+        DropDownOpened="SpeakerDevice_Opened" SelectionChanged="SpeakerDevice_Changed" AutomationProperties.AutomationId="SpeakerDevice"
+        ToolTip="选择 Zoom 或视频正在播放的声音设备；不采集自己的麦克风。"/>
+     <Button Content="重新编号" Click="SpeakerReset_Click" Margin="0,0,0,6" ToolTip="开始新的说话人会话，保留已有历史。"/>
+    </WrapPanel>
     <TextBlock x:Name="StatusText" Text="正在载入历史记录…" Foreground="#9FB5C6" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap"/>
    </StackPanel>
   </Border>
@@ -68,6 +77,8 @@
       <StackPanel>
        <DockPanel Margin="0,0,0,8">
         <Button Content="复制双语" DockPanel.Dock="Right" Click="Copy_Click" FontSize="11" Padding="7,2" Margin="12,0,0,0"/>
+        <TextBlock Text="{Binding Speaker}" Foreground="#8FCBBB" FontWeight="SemiBold" FontSize="12" DockPanel.Dock="Left"
+          Margin="0,0,12,0" Visibility="{Binding HasSpeaker, Converter={StaticResource BoolVisibility}}"/>
         <TextBlock Text="{Binding Time}" Foreground="#8CA5B9" FontSize="11" VerticalAlignment="Center"/>
        </DockPanel>
        <TextBox Text="{Binding Source, Mode=OneWay}" Style="{StaticResource ReadOnlyText}" Foreground="#BBCBD7"
@@ -89,9 +100,18 @@
       Background="#267C99" AutomationProperties.AutomationId="ReaderLatest"/>
   </Grid>
   <Border Grid.Row="2" Padding="16,8" Background="#13202B" BorderBrush="#283B4B" BorderThickness="0,1,0,0">
+   <StackPanel>
+    <Border x:Name="SpeechPreviewPanel" Visibility="Collapsed" Margin="0,0,0,8" Padding="8"
+       Background="#17232F" MaxHeight="100">
+     <StackPanel><TextBlock Text="正在识别 · 说话人待确认" FontSize="11" Foreground="#E2B86A"/>
+      <TextBox x:Name="SpeechPreviewText" Style="{StaticResource ReadOnlyText}" Foreground="#BBCBD7"
+        FontSize="14" MaxHeight="70" VerticalScrollBarVisibility="Auto"/>
+     </StackPanel>
+    </Border>
    <DockPanel><TextBlock x:Name="CountText" Text="0 条记录" Foreground="#9FB5C6" FontSize="11" DockPanel.Dock="Left"/>
     <TextBlock x:Name="FollowText" Text="自动跟随最新" Foreground="#8FCBBB" FontSize="11" HorizontalAlignment="Right"/>
    </DockPanel>
+   </StackPanel>
   </Border>
  </Grid>
 </Window>

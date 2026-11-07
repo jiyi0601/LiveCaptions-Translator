@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
+using LiveCaptionsTranslator.speech;
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -21,6 +23,8 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     private ScrollViewer? scroll;
     private bool initialized, loadingOlder, exhausted, programmatic, closed;
     private bool following = true;
+    private long scrollIntent;
+    private bool speakerControlsReady;
     public double OriginalFontSize => saved.OriginalFontSize;
     public double TranslatedFontSize => saved.TranslatedFontSize;
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -28,6 +32,17 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     {
         InitializeComponent();
         TranscriptList.ItemsSource = Entries;
+        TranscriptList.AddHandler(ScrollBar.ScrollEvent, new ScrollEventHandler(Transcript_ScrollBar));
+        TranscriptList.RequestBringIntoView += (_, e) =>
+        {
+            if (!following && !programmatic) e.Handled = true;
+        };
+        ReloadSpeakerDevices();
+        SpeakerToggle.IsChecked = saved.SpeakerEnabled;
+        speakerControlsReady = true;
+        Translator.SpeechPreviewChanged += SpeechPreviewChanged;
+        Translator.SpeakerModeChanged += SpeakerModeChanged;
+        SpeechPreviewChanged(Translator.SpeechPreview);
         ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "短（30–60 词）", Tag = ParagraphLength.Short });
         ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "适中（40–80 词）", Tag = ParagraphLength.Balanced });
         ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "长（60–120 词）", Tag = ParagraphLength.Long });
@@ -96,6 +111,50 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
             SchedulePosition(anchor);
         });
     }
+    private void ReloadSpeakerDevices()
+    {
+        bool wasReady = speakerControlsReady;
+        speakerControlsReady = false;
+        try
+        {
+            var devices = LoopbackSpeechSource.Devices().ToList();
+            if (!devices.Any(d => d.Id == saved.SpeakerDeviceId))
+                devices.Add(new(saved.SpeakerDeviceId, "已保存的播放设备（当前不可用）"));
+            SpeakerDeviceBox.ItemsSource = devices;
+            SpeakerDeviceBox.SelectedItem = devices.First(d => d.Id == saved.SpeakerDeviceId);
+        }
+        catch (Exception ex) { StatusText.Text = "无法列出播放设备：" + ex.Message; }
+        finally { speakerControlsReady = wasReady; }
+    }
+    private void SpeakerDevice_Opened(object sender, EventArgs e) => ReloadSpeakerDevices();
+    private void SpeakerToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (speakerControlsReady && !RuntimeOptions.Demo) Translator.ConfigureSpeaker(SpeakerToggle.IsChecked == true);
+    }
+    private void SpeakerDevice_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (speakerControlsReady && SpeakerDeviceBox.SelectedItem is PlaybackDevice device)
+            Translator.ConfigureSpeaker(SpeakerToggle.IsChecked == true, device.Id);
+    }
+    private void SpeakerReset_Click(object sender, RoutedEventArgs e)
+    {
+        if (SpeakerToggle.IsChecked == true && !RuntimeOptions.Demo) Translator.ConfigureSpeaker(true);
+    }
+    private void SpeakerModeChanged(bool enabled) => Dispatcher.BeginInvoke(() =>
+    {
+        if (closed) return;
+        speakerControlsReady = false;
+        SpeakerToggle.IsChecked = enabled;
+        speakerControlsReady = true;
+    });
+    private void SpeechPreviewChanged(string text) => Dispatcher.BeginInvoke(() =>
+    {
+        if (closed) return;
+        var anchor = following ? null : CaptureAnchor();
+        SpeechPreviewText.Text = text;
+        SpeechPreviewPanel.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (initialized) SchedulePosition(anchor);
+    });
     private void CaptureStatusChanged(string status) => Dispatcher.BeginInvoke(() =>
     {
         if (!closed) StatusText.Text = status;
@@ -135,9 +194,10 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     private void SchedulePosition(Anchor? anchor)
     {
         programmatic = true;
+        long intent = scrollIntent;
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
-            if (closed) return;
+            if (closed || intent != scrollIntent) { programmatic = false; return; }
             TranscriptList.UpdateLayout();
             if (following) scroll?.ScrollToEnd();
             else if (anchor != null && byId.TryGetValue(anchor.Id, out var item))
@@ -166,7 +226,8 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     private async void Transcript_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (!initialized || closed || programmatic || loadingOlder) return;
-        if (e.VerticalChange != 0 && e.ExtentHeightChange == 0) SetFollowing(AtBottom);
+        // Layout, focus and the provisional panel can all move the ScrollViewer.
+        // Only explicit user input may re-enable following.
         if (scroll?.VerticalOffset < 80 && !following && !exhausted) await LoadOlderAsync();
     }
     private async Task LoadOlderAsync()
@@ -192,18 +253,33 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
         {
             ChangeFont(e.Delta > 0 ? 1 : -1); e.Handled = true; return;
         }
-        if (e.Delta > 0) SetFollowing(false);
+        MarkUserScroll(upward: e.Delta > 0);
     }
     private void Transcript_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key is Key.Up or Key.PageUp or Key.Home) SetFollowing(false);
+        if (e.Key is Key.Up or Key.PageUp or Key.Home) MarkUserScroll(upward: true);
+        if (e.Key is Key.Down or Key.PageDown or Key.End) MarkUserScroll(upward: false);
         if (e.Key == Key.Home && Keyboard.Modifiers == ModifierKeys.Control)
         { SetFollowing(false); scroll?.ScrollToTop(); e.Handled = true; }
         if (e.Key == Key.End && Keyboard.Modifiers == ModifierKeys.Control)
         { Latest_Click(sender, e); e.Handled = true; }
     }
+    private void MarkUserScroll(bool upward)
+    {
+        long intent = ++scrollIntent;
+        SetFollowing(false);
+        if (!upward)
+            Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
+            {
+                if (!closed && scrollIntent == intent && AtBottom) SetFollowing(true);
+            });
+    }
+    private void Transcript_ScrollBar(object sender, ScrollEventArgs e) =>
+        MarkUserScroll(e.ScrollEventType is ScrollEventType.ThumbTrack or ScrollEventType.SmallDecrement
+            or ScrollEventType.LargeDecrement or ScrollEventType.First);
     private void Latest_Click(object sender, RoutedEventArgs e)
     {
+        scrollIntent++;
         SetFollowing(true); SchedulePosition(null);
     }
     private void ParagraphPause_Changed(object sender, SelectionChangedEventArgs e)
@@ -246,13 +322,14 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     {
         var dialog = new SaveFileDialog
         {
-            Filter = "CSV 文件 (*.csv)|*.csv",
+            Filter = "CSV（含说话人） (*.csv)|*.csv|CSV（原五字段） (*.csv)|*.csv",
+            FilterIndex = saved.SpeakerEnabled ? 1 : 2,
             FileName = "双语记录_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".csv"
         };
         if (dialog.ShowDialog(this) != true) return;
         try
         {
-            await SQLiteHistoryLogger.Store.ExportAsync(dialog.FileName);
+            await SQLiteHistoryLogger.Store.ExportAsync(dialog.FileName, includeSpeakers: dialog.FilterIndex == 1);
             StatusText.Text = "全部历史已导出：" + Path.GetFileName(dialog.FileName);
         }
         catch (Exception ex) { StatusText.Text = "导出失败：" + ex.Message; }
@@ -266,6 +343,8 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     {
         closed = true;
         Translator.TranscriptChanged -= EntryChanged;
+        Translator.SpeechPreviewChanged -= SpeechPreviewChanged;
+        Translator.SpeakerModeChanged -= SpeakerModeChanged;
         Translator.CaptureStatusChanged -= CaptureStatusChanged;
         SQLiteHistoryLogger.HistoryCleared -= HistoryCleared;
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;

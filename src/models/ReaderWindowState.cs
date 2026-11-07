@@ -4,6 +4,8 @@ namespace LiveCaptionsTranslator.models;
 
 public sealed class ReaderWindowState
 {
+    public bool SpeakerEnabled { get; set; }
+    public string SpeakerDeviceId { get; set; } = "";
     public bool Topmost { get; set; } = true;
     public ParagraphLength ParagraphLength { get; set; } = ParagraphLength.Balanced;
     private int paragraphPauseSeconds = ParagraphSegmenter.DefaultPauseSeconds;

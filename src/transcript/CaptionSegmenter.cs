@@ -5,6 +5,8 @@ namespace LiveCaptionsTranslator.transcript;
 public sealed record SegmentUpdate(long Key, int Revision, string Text, bool IsFinal)
 {
     public long ParagraphKey { get; init; }
+    public LiveCaptionsTranslator.speech.SpeechInfo? Speech { get; init; }
+    public LiveCaptionsTranslator.speech.SpeechDraft? RemainingDraft { get; init; }
 }
 
 /// <summary>Tracks word ownership across rolling captions and later punctuation changes.</summary>

@@ -283,8 +283,10 @@ namespace LiveCaptionsTranslator.models
             Save(FILENAME);
         }
 
+        private static readonly object saveGate = new();
         public void Save(string jsonPath)
         {
+            lock (saveGate)
             using (FileStream fileStream = File.Open(jsonPath, FileMode.Create, FileAccess.Write, FileShare.Read))
             {
                 var options = new JsonSerializerOptions

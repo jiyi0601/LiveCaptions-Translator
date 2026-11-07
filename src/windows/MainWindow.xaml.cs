@@ -169,7 +169,7 @@ namespace LiveCaptionsTranslator
                 return;
 
             RootNavigation.Navigate(typeof(SettingPage));
-            LiveCaptionsHandler.RestoreLiveCaptions(Translator.Window);
+            if (Translator.Window != null) LiveCaptionsHandler.RestoreLiveCaptions(Translator.Window);
 
             Dispatcher.InvokeAsync(() =>
             {

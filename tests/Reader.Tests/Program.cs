@@ -623,6 +623,226 @@ await Test("Recorded delicious speech remains identical to raw captions at two a
     return Task.CompletedTask;
 });
 
+
+await Test("Speaker change splits a paragraph even below the minimum length", async () =>
+{
+    var a = new LiveCaptionsTranslator.speech.SpeakerParagraphAssembler();
+    var words = new[] { new LiveCaptionsTranslator.speech.TimedWord(0, "Hello", 0, .5), new LiveCaptionsTranslator.speech.TimedWord(1, "Welcome", .6, 1) };
+    var spans = new[] { new LiveCaptionsTranslator.speech.SpeakerSpan(0, .55, "A", LiveCaptionsTranslator.speech.SpeakerState.Identified),
+        new LiveCaptionsTranslator.speech.SpeakerSpan(.55, 2, "B", LiveCaptionsTranslator.speech.SpeakerState.Identified) };
+    var updates = a.Assemble("session", words, spans, "zh", "Test", "");
+    Check(updates.Count == 2 && updates[0].ParagraphKey != updates[1].ParagraphKey, "Speakers merged");
+    var store = NewStore("speaker-boundary");
+    await using var engine = new TranscriptEngine(store, (text, _) => Task.FromResult(text));
+    foreach (var update in updates) await engine.AcceptAsync(update, "zh", "Test");
+    await engine.WhenIdleAsync();
+    var rows = await store.ReadBeforeAsync(null, 10);
+    Check(rows[0].Speech!.SpeakerId == "A" && rows[1].Speech!.SpeakerId == "B" && rows[0].GroupId != rows[1].GroupId, "Speaker metadata or grouping");
+});
+await Test("Same speaker continues the paragraph across translation fragments", () =>
+{
+    var a = new LiveCaptionsTranslator.speech.SpeakerParagraphAssembler();
+    var span = new[] { new LiveCaptionsTranslator.speech.SpeakerSpan(0, 20, "A", LiveCaptionsTranslator.speech.SpeakerState.Identified) };
+    var one = a.Assemble("s", new[] { new LiveCaptionsTranslator.speech.TimedWord(0, "First", 0, 1) }, span, "zh", "api", "");
+    var two = a.Assemble("s", new[] { new LiveCaptionsTranslator.speech.TimedWord(1, "Second", 2, 3) }, span, "zh", "api", "");
+    Check(one[0].ParagraphKey == two[0].ParagraphKey, "Short pause split");
+    return Task.CompletedTask;
+});
+await Test("Speaker paragraphs preserve the hard word cap and repeated words", () =>
+{
+    var a = new LiveCaptionsTranslator.speech.SpeakerParagraphAssembler { Length = ParagraphLength.Short };
+    var words = Enumerable.Range(0, 145).Select(i => new LiveCaptionsTranslator.speech.TimedWord(i, "again", i * .2, i * .2 + .1)).ToArray();
+    var spans = new[] { new LiveCaptionsTranslator.speech.SpeakerSpan(0, 40, "A", LiveCaptionsTranslator.speech.SpeakerState.Identified) };
+    var result = a.Assemble("s", words, spans, "zh", "api", "");
+    Check(result.Sum(r => r.Text.Split(' ').Length) == 145, "Repeated genuine speech removed");
+    Check(result.GroupBy(r => r.ParagraphKey).All(g => g.Sum(r => r.Text.Split(' ').Length) <= 60), "Word cap");
+    return Task.CompletedTask;
+});
+await Test("Long pauses and translation option changes close speaker paragraphs", () =>
+{
+    var a = new LiveCaptionsTranslator.speech.SpeakerParagraphAssembler { PauseSeconds = 2 };
+    var spans = new[] { new LiveCaptionsTranslator.speech.SpeakerSpan(0, 20, "A", LiveCaptionsTranslator.speech.SpeakerState.Identified) };
+    var p1 = a.Assemble("s", new[] { new LiveCaptionsTranslator.speech.TimedWord(0, "One", 0, .5) }, spans, "zh", "api", "");
+    var p2 = a.Assemble("s", new[] { new LiveCaptionsTranslator.speech.TimedWord(1, "Two", 3, 3.5) }, spans, "zh", "api", "");
+    var p3 = a.Assemble("s", new[] { new LiveCaptionsTranslator.speech.TimedWord(2, "Three", 4, 4.5) }, spans, "ja", "api", "");
+    Check(p1[0].ParagraphKey != p2[0].ParagraphKey && p2[0].ParagraphKey != p3[0].ParagraphKey, "Boundary ignored");
+    return Task.CompletedTask;
+});
+await Test("Overlapping voices are not forced to a named speaker", () =>
+{
+    var spans = new[] { new LiveCaptionsTranslator.speech.SpeakerSpan(0, 2, "A", LiveCaptionsTranslator.speech.SpeakerState.Identified),
+        new LiveCaptionsTranslator.speech.SpeakerSpan(1, 3, "B", LiveCaptionsTranslator.speech.SpeakerState.Identified) };
+    var who = LiveCaptionsTranslator.speech.SpeakerLabels.ForWord(new(0, "yes", 1.2, 1.4), spans);
+    Check(who.State == LiveCaptionsTranslator.speech.SpeakerState.Overlap && who.SpeakerId == null, "Overlap misattributed");
+    var unknown = LiveCaptionsTranslator.speech.SpeakerLabels.ForWord(new(1, "no", 4, 4.1), spans);
+    Check(unknown.State == LiveCaptionsTranslator.speech.SpeakerState.Unknown, "Missing evidence guessed");
+    return Task.CompletedTask;
+});
+await Test("Voice registry keeps returning the same identity and rejects ambiguous samples", () =>
+{
+    var registry = new LiveCaptionsTranslator.speech.SpeakerRegistry();
+    Check(registry.Match(new float[] { 1, 0, 0 }) == "A", "First speaker");
+    Check(registry.Match(new float[] { 0, 1, 0 }) == "B", "Second speaker");
+    Check(registry.Match(new float[] { .99f, .02f, 0 }) == "A", "Returning speaker changed");
+    Check(registry.Match(new float[] { 1, 1, 0 }) == null, "Ambiguous identity forced");
+    Check(registry.Match(new float[] { 0, 0, 1 }, false) == null && registry.Count == 2, "Short sample enrolled");
+    Check(LiveCaptionsTranslator.speech.SpeakerLabels.At(26) == "AA", "Label overflow");
+    return Task.CompletedTask;
+});
+await Test("Audio ring retains the exact latest samples with bounded storage", () =>
+{
+    var ring = new LiveCaptionsTranslator.speech.AudioRing(1);
+    ring.Add(Enumerable.Range(0, 50000).Select(x => (float)x).ToArray());
+    var retained = ring.Read(0, 50000);
+    Check(retained.Length == 16000 && retained[0] == 34000 && retained[^1] == 49999, "Ring sample ownership");
+    Check(ring.Read(49990, 50000).SequenceEqual(Enumerable.Range(49990, 10).Select(x => (float)x)), "Ring tail");
+    return Task.CompletedTask;
+});
+await Test("Speaker commit and draft removal are atomic and idempotent", async () =>
+{
+    var store = NewStore("speaker-draft");
+    var draft = new LiveCaptionsTranslator.speech.SpeechDraft("s", "First second", "zh", "api", 0, 2);
+    await store.SaveDraftAsync(draft);
+    var speech = new LiveCaptionsTranslator.speech.SpeechInfo("s", "word-0", "A", LiveCaptionsTranslator.speech.SpeakerState.Identified, 0, 1);
+    var created = await store.CreateAsync("First", "zh", "api", speech: speech, remainingDraft: draft with { Text = "second" });
+    var repeated = await store.CreateAsync("First", "zh", "api", speech: speech, remainingDraft: draft);
+    Check(created.Id == repeated.Id && (await store.ReadBeforeAsync(null, 20)).Count == 1, "Replay duplicated");
+    Check((await store.ReadDraftsAsync()).Single().Text == "second", "Replay regressed draft watermark");
+    await store.CreateAsync("second", "zh", "api", speech: speech with { SourceKey = "word-1", Start = 1, End = 2 },
+        remainingDraft: draft with { Text = "" });
+    Check((await store.ReadDraftsAsync()).Count == 0, "Committed draft survived");
+});
+await Test("Draft recovery survives reopen without resurrecting committed text", async () =>
+{
+    string path = Path.Combine(root, "draft-reopen.db");
+    var first = new HistoryStore(path);
+    var draft = new LiveCaptionsTranslator.speech.SpeechDraft("crash", "Unfinished words", "zh", "api", 5, 6);
+    await first.SaveDraftAsync(draft);
+    var reopened = new HistoryStore(path);
+    var recovered = (await reopened.ReadDraftsAsync()).Single();
+    var speech = new LiveCaptionsTranslator.speech.SpeechInfo("crash", "recovered", null, LiveCaptionsTranslator.speech.SpeakerState.Unknown, 5, 6);
+    await reopened.CreateAsync(recovered.Text, recovered.Language, recovered.Api, speech: speech, remainingDraft: recovered with { Text = "" });
+    Check((await new HistoryStore(path).ReadDraftsAsync()).Count == 0, "Recovery was not durable");
+    var row = (await reopened.ReadBeforeAsync(null, 10)).Single();
+    Check(row.SourceText == draft.Text && row.SpeakerLabel == "未确定", "Recovery falsely assigned voice");
+});
+await Test("Session namespaces preserve identical repeated utterances", async () =>
+{
+    var store = NewStore("speaker-sessions");
+    var speech = new LiveCaptionsTranslator.speech.SpeechInfo("meeting1", "0", "A", LiveCaptionsTranslator.speech.SpeakerState.Identified, 0, 1);
+    await store.CreateAsync("Thank you", "zh", "api", speech: speech);
+    await store.CreateAsync("Thank you", "zh", "api", speech: speech with { SourceKey = "1" });
+    await store.CreateAsync("Thank you", "zh", "api", speech: speech with { SessionId = "meeting2" });
+    Check((await store.ReadBeforeAsync(null, 10)).Count == 3, "Repeated speech or new session collapsed");
+});
+await Test("Speaker metadata survives late translations and historical paging", async () =>
+{
+    var store = NewStore("speaker-late"); var a = Completion(); var b = Completion();
+    await using var engine = new TranscriptEngine(store, (text, _) => text == "Alpha" ? a.Task : b.Task, concurrency: 2);
+    var info = new LiveCaptionsTranslator.speech.SpeechInfo("s", "0", "A", LiveCaptionsTranslator.speech.SpeakerState.Identified, 0, 1);
+    await engine.AcceptAsync(new(-10, 1, "Alpha", true) { Speech = info }, "zh", "api");
+    await engine.AcceptAsync(new(-11, 1, "Beta", true) { Speech = info with { SourceKey = "1", SpeakerId = "B" } }, "zh", "api");
+    b.SetResult("乙"); a.SetResult("甲"); await engine.WhenIdleAsync();
+    var rows = await store.ReadParagraphsBeforeAsync(null, 1);
+    Check(rows.Single().SpeakerLabel == "说话人 B" && rows[0].TranslatedText == "乙", "Late speaker mismatch");
+    var earlier = await store.ReadParagraphsBeforeAsync(rows[0].GroupId, 1);
+    Check(earlier.Single().SpeakerLabel == "说话人 A", "Paging metadata lost");
+});
+await Test("Speaker copy and both CSV formats preserve their contracts", async () =>
+{
+    var store = NewStore("speaker-csv");
+    var info = new LiveCaptionsTranslator.speech.SpeechInfo("s", "0", "A", LiveCaptionsTranslator.speech.SpeakerState.Identified, 0, 1);
+    var row = await store.CreateAsync("Hello", "zh", "api", "你好", speech: info);
+    Check(new ReaderEntry(row).CopyText.Contains("说话人 A"), "Copy omitted speaker");
+    string legacy = Path.Combine(root, "legacy.csv"), extended = Path.Combine(root, "speaker.csv");
+    await store.ExportAsync(legacy); await store.ExportAsync(extended, true);
+    Check(File.ReadLines(legacy).First() == "Timestamp,SourceText,TranslatedText,TargetLanguage,ApiUsed", "Legacy CSV changed");
+    Check(File.ReadLines(extended).First().EndsWith(",SessionId,Speaker") && File.ReadAllText(extended).Contains("说话人 A"), "Extended CSV");
+});
+await Test("Speaker settings roundtrip with a disabled default", () =>
+{
+    var saved = new LiveCaptionsTranslator.models.ReaderWindowState();
+    Check(!saved.SpeakerEnabled && saved.SpeakerDeviceId == "", "Unexpected capture default");
+    saved.SpeakerEnabled = true; saved.SpeakerDeviceId = "device-test";
+    var json = System.Text.Json.JsonSerializer.Serialize(saved);
+    var read = System.Text.Json.JsonSerializer.Deserialize<LiveCaptionsTranslator.models.ReaderWindowState>(json)!;
+    Check(read.SpeakerEnabled && read.SpeakerDeviceId == "device-test", "Settings lost");
+    return Task.CompletedTask;
+});
+
+
+await Test("A medium-length speaker paragraph splits at a short audio pause within one batch", () =>
+{
+    var assembler = new LiveCaptionsTranslator.speech.SpeakerParagraphAssembler();
+    var first = Enumerable.Range(0, 39).Select(i => new LiveCaptionsTranslator.speech.TimedWord(i, "word", i * .2, i * .2 + .1)).ToArray();
+    var spans = new[] { new LiveCaptionsTranslator.speech.SpeakerSpan(0, 20, "A", LiveCaptionsTranslator.speech.SpeakerState.Identified) };
+    var a = assembler.Assemble("s", first, spans, "zh", "test", "");
+    var b = assembler.Assemble("s", new[] {
+        new LiveCaptionsTranslator.speech.TimedWord(39, "forty", 7.8, 7.9),
+        new LiveCaptionsTranslator.speech.TimedWord(40, "next", 9.5, 9.6)
+    }, spans, "zh", "test", "");
+    Check(b.Count == 2 && b[0].ParagraphKey == a[^1].ParagraphKey && b[1].ParagraphKey != b[0].ParagraphKey, "In-batch pause merged");
+    return Task.CompletedTask;
+});
+await Test("Punctuation cannot insert, remove or change recognized words", () =>
+{
+    var assembler = new LiveCaptionsTranslator.speech.SpeakerParagraphAssembler();
+    var words = new[] { new LiveCaptionsTranslator.speech.TimedWord(0, "hello", 0, 1),
+        new LiveCaptionsTranslator.speech.TimedWord(1, "again", 1, 2) };
+    var updates = assembler.Assemble("s", words, Array.Empty<LiveCaptionsTranslator.speech.SpeakerSpan>(),
+        "zh", "test", "pending words", _ => "A hallucinated replacement.", pendingEnd: 5);
+    Check(updates.Single().Text == "hello again", "Punctuation changed source text");
+    Check(updates[0].RemainingDraft!.Text == "pending words" && updates[0].RemainingDraft!.End == 5, "Pending time range lost");
+    return Task.CompletedTask;
+});
+await Test("A failed draft write rolls back the new formal record", async () =>
+{
+    string path = Path.Combine(root, "atomic-rollback.db");
+    var store = new HistoryStore(path);
+    using (var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + path))
+    {
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "CREATE TRIGGER RejectDraft BEFORE INSERT ON SpeakerDrafts BEGIN SELECT RAISE(ABORT,'injected failure'); END;";
+        command.ExecuteNonQuery();
+    }
+    bool failed = false;
+    try
+    {
+        await store.CreateAsync("Should roll back", "zh", "test",
+            speech: new("s", "key", "A", LiveCaptionsTranslator.speech.SpeakerState.Identified, 0, 1),
+            remainingDraft: new("s", "remaining", "zh", "test", 1, 2));
+    }
+    catch (Microsoft.Data.Sqlite.SqliteException) { failed = true; }
+    Check(failed && (await store.ReadBeforeAsync(null, 10)).Count == 0, "Partial commit survived failed transaction");
+});
+await Test("Speaker metadata and complete paragraphs survive 200 then 100 pagination", async () =>
+{
+    var store = NewStore("speaker-full-pages");
+    for (int i = 0; i < 305; i++)
+    {
+        var info = new LiveCaptionsTranslator.speech.SpeechInfo("session", (i * 2).ToString(), "A",
+            LiveCaptionsTranslator.speech.SpeakerState.Identified, i * 2, i * 2 + 1);
+        var first = await store.CreateAsync("first " + i, "zh", "test", speech: info);
+        await store.CreateAsync("second " + i, "zh", "test", paragraphId: first.Id, speech: info with { SourceKey = (i * 2 + 1).ToString() });
+    }
+    var p1 = await store.ReadParagraphsBeforeAsync(null, 200);
+    var p2 = await store.ReadParagraphsBeforeAsync(p1.Min(r => r.GroupId), 100);
+    var p3 = await store.ReadParagraphsBeforeAsync(p2.Min(r => r.GroupId), 100);
+    var all = p1.Concat(p2).Concat(p3).ToArray();
+    Check(p1.Count == 400 && p2.Count == 200 && p3.Count == 10, "Speaker pages split a paragraph");
+    Check(all.Select(r => r.Id).Distinct().Count() == 610 && all.All(r => r.Speech!.SessionId == "session"), "Page overlap or metadata loss");
+});
+
+await Test("Single-file paths use the executable directory instead of its extraction cache", () =>
+{
+    string executable = Path.Combine(root, "renamed-reader.exe");
+    string extraction = Path.Combine(root, "temporary-bundle");
+    Check(LiveCaptionsTranslator.RuntimeOptions.LocateProgramDirectory(executable, extraction) == root, "Single-file data remained temporary");
+    Check(LiveCaptionsTranslator.RuntimeOptions.LocateProgramDirectory(Path.Combine(root, "dotnet.exe"), extraction) == extraction, "DLL host directory used as application directory");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"Results: {passed} passed, {failures.Count} failed.");
 Console.WriteLine("Test data: " + root);
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;

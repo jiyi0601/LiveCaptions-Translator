@@ -1,3 +1,5 @@
+> **Speaker diarization test branch**: optional local CPU speaker labels, provisional transcript and session-aware CSV. Disabled by default. Rapid turns have not met the acceptance gate. [Chinese guide](docs/说话人区分.md) · [Measured results](docs/说话人测试记录.md).
+
 > **Personal fork: continuous bilingual reader.** An independent reader groups short utterances into natural paragraphs (40–80 English words by default, with Short/Balanced/Long options and a configurable 2/3/5/8/12 second pause, default 3 seconds), keeps English above Chinese, and supports persistent scrollback and paragraph-based CSV export. [Chinese guide](docs/连续双语阅读窗.md) · [Validation](docs/验收记录.md). The upstream documentation and license are retained below.
 
 <div align="center">

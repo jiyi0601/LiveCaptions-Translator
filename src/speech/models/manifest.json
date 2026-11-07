@@ -1,0 +1,78 @@
+[
+  {
+    "Sha256": "455F40E556AA2B20AC9D3BFFD603B58002075C1193B4070938540C11EFE0A4DA",
+    "Size": 506956414,
+    "Archive": "sherpa-onnx-streaming-zipformer-en-2023-06-21.tar.bz2",
+    "Name": "英文识别",
+    "Files": [
+      {
+        "Size": 187823992,
+        "Sha256": "32C98281C7BD8B63E3E142D007251B37F120572E8FDEA9A4F5A79CE22B10EC4F",
+        "Path": "sherpa-onnx-streaming-zipformer-en-2023-06-21/encoder-epoch-99-avg-1.int8.onnx"
+      },
+      {
+        "Size": 539246,
+        "Sha256": "093E23C90869898F761F60AA3363F96D43B9C6E5C06A57860C3A5B3407AB8320",
+        "Path": "sherpa-onnx-streaming-zipformer-en-2023-06-21/decoder-epoch-99-avg-1.int8.onnx"
+      },
+      {
+        "Size": 259335,
+        "Sha256": "831477D390E59A61F1B6A6F763B9903E6C6366FF6034F1DDBA613BE82637122F",
+        "Path": "sherpa-onnx-streaming-zipformer-en-2023-06-21/joiner-epoch-99-avg-1.int8.onnx"
+      },
+      {
+        "Size": 5048,
+        "Sha256": "49E3C2646595FD907228B3C6787069658F67B17377C60AEB8619C4551B2316FB",
+        "Path": "sherpa-onnx-streaming-zipformer-en-2023-06-21/tokens.txt"
+      }
+    ],
+    "Url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-21.tar.bz2"
+  },
+  {
+    "Sha256": "24615EE884C897D9D2BA09BB4D30DA6BB1B15E685065962DB5B02E76E4996488",
+    "Size": 6958444,
+    "Archive": "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+    "Name": "说话人分段",
+    "Files": [
+      {
+        "Size": 5992913,
+        "Sha256": "220AD67CA923BEF2FA91F2390C786097BF305BCEB5E261D4AF67B38E938E1079",
+        "Path": "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+      }
+    ],
+    "Url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+  },
+  {
+    "Sha256": "AD4A1802485D8B34C722D2A9D04249662F2ECE5D28A7A039063CA22F515A789E",
+    "Size": 40257283,
+    "Archive": "nemo_en_titanet_small.onnx",
+    "Name": "声音特征",
+    "Files": [
+      {
+        "Size": 40257283,
+        "Sha256": "AD4A1802485D8B34C722D2A9D04249662F2ECE5D28A7A039063CA22F515A789E",
+        "Path": "nemo_en_titanet_small.onnx"
+      }
+    ],
+    "Url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx"
+  },
+  {
+    "Sha256": "9F5E5A72C7D2829635BD074FCE92B6BBD5B78DA8A52E7AD8ED1BE933F366B99D",
+    "Size": 30667839,
+    "Archive": "sherpa-onnx-online-punct-en-2024-08-06.tar.bz2",
+    "Name": "英文标点",
+    "Files": [
+      {
+        "Size": 7490500,
+        "Sha256": "9D611F445FE4A46186080FE161BE6059D87D72EB88D3A8CB00C1A06E83A6067E",
+        "Path": "sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx"
+      },
+      {
+        "Size": 149430,
+        "Sha256": "E118B7AD88C54DB562517DF49E1CFFD4836D166C34FB190FD311D7F34EB238F5",
+        "Path": "sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab"
+      }
+    ],
+    "Url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-online-punct-en-2024-08-06.tar.bz2"
+  }
+]

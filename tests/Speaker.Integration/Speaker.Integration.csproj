@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><RuntimeIdentifier>win-x64</RuntimeIdentifier></PropertyGroup>
+ <ItemGroup>
+  <Compile Include="../../src/speech/*.cs" Link="speech/%(Filename)%(Extension)"/>
+  <Compile Include="../../src/transcript/*.cs" Link="transcript/%(Filename)%(Extension)"/>
+  <Compile Include="../../src/models/TranslationHistoryEntry.cs" Link="TranslationHistoryEntry.cs"/>
+  <EmbeddedResource Include="../../src/speech/models/manifest.json" LogicalName="SpeakerModels.json"/>
+  <PackageReference Include="org.k2fsa.sherpa.onnx" Version="2.0.1"/>
+  <PackageReference Include="NAudio" Version="2.2.1"/>
+  <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.1"/>
+  <PackageReference Include="CsvHelper" Version="33.0.1"/>
+ </ItemGroup>
+</Project>

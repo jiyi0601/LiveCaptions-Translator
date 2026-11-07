@@ -3,6 +3,8 @@ namespace LiveCaptionsTranslator.models;
 
 public record TranslationHistoryEntry
 {
+    [Ignore] public LiveCaptionsTranslator.speech.SpeechInfo? Speech { get; init; }
+    [Ignore] public string SpeakerLabel => Speech?.Label ?? "";
     [Ignore] public long Id { get; init; }
     [Ignore] public long ParagraphId { get; init; }
     [Ignore] public long GroupId => ParagraphId > 0 ? ParagraphId : Id;
