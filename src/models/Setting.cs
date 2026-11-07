@@ -287,15 +287,15 @@ namespace LiveCaptionsTranslator.models
         public void Save(string jsonPath)
         {
             lock (saveGate)
-            using (FileStream fileStream = File.Open(jsonPath, FileMode.Create, FileAccess.Write, FileShare.Read))
-            {
-                var options = new JsonSerializerOptions
+                using (FileStream fileStream = File.Open(jsonPath, FileMode.Create, FileAccess.Write, FileShare.Read))
                 {
-                    WriteIndented = true,
-                    Converters = { new ConfigDictConverter() }
-                };
-                JsonSerializer.Serialize(fileStream, this, options);
-            }
+                    var options = new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        Converters = { new ConfigDictConverter() }
+                    };
+                    JsonSerializer.Serialize(fileStream, this, options);
+                }
         }
 
         public void OnPropertyChanged([CallerMemberName] string? propName = null)

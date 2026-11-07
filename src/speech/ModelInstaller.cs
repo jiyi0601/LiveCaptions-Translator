@@ -63,7 +63,9 @@ public static class ModelInstaller
                 var start = new ProcessStartInfo
                 {
                     FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe"),
-                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardError = true
                 };
                 start.ArgumentList.Add("-xf"); start.ArgumentList.Add(archive);
                 start.ArgumentList.Add("-C"); start.ArgumentList.Add(root);
