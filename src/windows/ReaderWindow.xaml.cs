@@ -28,6 +28,11 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     {
         InitializeComponent();
         TranscriptList.ItemsSource = Entries;
+        ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "短（30–60 词）", Tag = ParagraphLength.Short });
+        ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "适中（40–80 词）", Tag = ParagraphLength.Balanced });
+        ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "长（60–120 词）", Tag = ParagraphLength.Long });
+        ParagraphLengthBox.SelectedItem = ParagraphLengthBox.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (ParagraphLength)i.Tag == saved.ParagraphLength);
+        if (ParagraphLengthBox.SelectedItem == null) ParagraphLengthBox.SelectedIndex = 1;
         Width = Math.Clamp(saved.Width, MinWidth, Math.Max(MinWidth, SystemParameters.VirtualScreenWidth));
         Height = Math.Clamp(saved.Height, MinHeight, Math.Max(MinHeight, SystemParameters.VirtualScreenHeight));
         var desktop = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
@@ -55,10 +60,10 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
         scroll = FindChild<ScrollViewer>(TranscriptList);
         try
         {
-            var rows = await SQLiteHistoryLogger.Store.ReadBeforeAsync(null, 200);
+            var rows = await SQLiteHistoryLogger.Store.ReadParagraphsBeforeAsync(null, 200);
             if (closed) return;
             foreach (var row in rows) Upsert(row);
-            exhausted = rows.Count < 200;
+            exhausted = rows.Select(r => r.GroupId).Distinct().Count() < 200;
             foreach (var row in initialChanges) Upsert(row);
             initialChanges.Clear();
             initialized = true;
@@ -70,11 +75,19 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     }
     private void EntryChanged(TranslationHistoryEntry entry)
     {
-        Dispatcher.BeginInvoke(() =>
+        Dispatcher.BeginInvoke(async () =>
         {
             if (closed) return;
             if (!initialized) { initialChanges.Add(entry); return; }
+            List<TranslationHistoryEntry>? missing = null;
+            if (!byId.ContainsKey(entry.GroupId) && entry.Id != entry.GroupId)
+            {
+                try { missing = await SQLiteHistoryLogger.Store.ReadParagraphAsync(entry.GroupId); }
+                catch (Exception ex) { StatusText.Text = "读取段落失败：" + ex.Message; }
+            }
+            if (closed) return;
             var anchor = following ? null : CaptureAnchor();
+            if (missing != null) foreach (var part in missing) Upsert(part);
             Upsert(entry);
             RefreshFooter();
             SchedulePosition(anchor);
@@ -91,14 +104,14 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     });
     private void Upsert(TranslationHistoryEntry entry)
     {
-        if (byId.TryGetValue(entry.Id, out var existing)) { existing.Update(entry); return; }
+        if (byId.TryGetValue(entry.GroupId, out var existing)) { existing.Update(entry); return; }
         var row = new ReaderEntry(entry);
-        byId.Add(entry.Id, row);
+        byId.Add(entry.GroupId, row);
         int low = 0, high = Entries.Count;
         while (low < high)
         {
             int mid = (low + high) / 2;
-            if (Entries[mid].Id < entry.Id) low = mid + 1; else high = mid;
+            if (Entries[mid].Id < entry.GroupId) low = mid + 1; else high = mid;
         }
         Entries.Insert(low, row);
     }
@@ -160,10 +173,10 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
         var anchor = CaptureAnchor();
         try
         {
-            var rows = await SQLiteHistoryLogger.Store.ReadBeforeAsync(Entries[0].Id, 100);
+            var rows = await SQLiteHistoryLogger.Store.ReadParagraphsBeforeAsync(Entries[0].Id, 100);
             if (closed) return;
             foreach (var row in rows) Upsert(row);
-            exhausted = rows.Count < 100;
+            exhausted = rows.Select(r => r.GroupId).Distinct().Count() < 100;
             RefreshFooter();
             SchedulePosition(anchor);
         }
@@ -190,6 +203,12 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     {
         SetFollowing(true); SchedulePosition(null);
     }
+    private void ParagraphLength_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (ParagraphLengthBox.SelectedItem is ComboBoxItem { Tag: ParagraphLength length })
+            Translator.SetParagraphLength(length);
+    }
+
     private void Pin_Click(object sender, RoutedEventArgs e)
     {
         Topmost = !Topmost; saved.Topmost = Topmost;

@@ -19,10 +19,10 @@ public static class Translator
     public static event Action? TranslationLogged;
     public static event Action<TranslationHistoryEntry>? TranscriptChanged;
     public static event Action<string>? CaptureStatusChanged;
-    private static readonly CaptionSegmenter segmenter = new();
+    private static readonly ParagraphSegmenter segmenter = new(Setting.ReaderWindow.ParagraphLength);
     private static readonly CancellationTokenSource stopping = new();
     private static readonly SortedDictionary<long, TranslationHistoryEntry> context = new();
-    private static readonly TranscriptEngine engine = new(SQLiteHistoryLogger.Store, TranslateTextAsync);
+    private static readonly TranscriptEngine engine = new(SQLiteHistoryLogger.Store, TranslateTextAsync, entryTranslator: TranslateEntryAsync);
     private static long latestId;
     private static Task? captureTask;
     public static string CaptureStatus { get; private set; } = "正在连接 Windows 实时字幕…";
@@ -78,9 +78,15 @@ public static class Translator
                 fullText = RegexPatterns.Acronym().Replace(fullText, "$1$2");
                 fullText = RegexPatterns.AcronymWithWords().Replace(fullText, "$1 $2");
                 IReadOnlyList<SegmentUpdate> changes;
-                lock (segmenter) changes = segmenter.Update(fullText);
+                string language = Setting.TargetLanguage, api = Setting.ApiName;
+                bool logOnly = LogOnlyFlag;
+                lock (segmenter)
+                {
+                    segmenter.SetContext(language + "|" + api + "|" + logOnly);
+                    changes = segmenter.Update(fullText);
+                }
                 foreach (var update in changes)
-                    await engine.AcceptAsync(update, Setting.TargetLanguage, Setting.ApiName, LogOnlyFlag);
+                    await engine.AcceptAsync(update, language, api, logOnly);
                 SetStatus(LogOnlyFlag ? "仅记录原文 · 翻译已暂停" : string.IsNullOrWhiteSpace(fullText)
                     ? "正在聆听 · 等待电脑播放语音" : "实时记录中 · 英文在上，译文在下");
             }
@@ -111,14 +117,22 @@ public static class Translator
             TranslationLogged?.Invoke();
         });
     }
+    private static async Task<string> TranslateEntryAsync(TranslationHistoryEntry entry, CancellationToken token)
+    {
+        using var scope = TranslateAPI.UseOptions(entry.ApiUsed, entry.TargetLanguage);
+        return await TranslateTextAsync(entry.SourceText, token);
+    }
+
     private static async Task<string> TranslateTextAsync(string text, CancellationToken token)
     {
         if (RuntimeOptions.Demo)
         {
             await Task.Delay(550, token);
-            return text.Contains("first result", StringComparison.OrdinalIgnoreCase) ? "我们来看第一个结果。"
-                : text.Contains("difference", StringComparison.OrdinalIgnoreCase) ? "这个差异非常明显。"
-                : "这是一段用于检查连续阅读界面的示例译文。";
+            var translatedParts = new List<string>();
+            if (text.Contains("first result", StringComparison.OrdinalIgnoreCase)) translatedParts.Add("我们来看第一个结果。");
+            if (text.Contains("difference", StringComparison.OrdinalIgnoreCase)) translatedParts.Add("这个差异非常明显。");
+            if (text.Contains("complete bilingual transcript", StringComparison.OrdinalIgnoreCase)) translatedParts.Add("我们可以回看完整的双语记录。");
+            return translatedParts.Count > 0 ? string.Join("", translatedParts) : "这是一段用于检查连续阅读界面的示例译文。";
         }
         var sw = Setting.MainWindow.LatencyShow ? Stopwatch.StartNew() : null;
         string translated;
@@ -136,6 +150,13 @@ public static class Translator
         if (sw != null && !translated.Contains("[ERROR]")) translated = "[" + sw.ElapsedMilliseconds + " ms] " + translated;
         return translated;
     }
+    public static void SetParagraphLength(ParagraphLength length)
+    {
+        lock (segmenter) segmenter.SetLength(length);
+        Setting.ReaderWindow.ParagraphLength = length;
+        Setting.Save();
+    }
+
     public static void ClearContexts()
     {
         context.Clear();
@@ -154,11 +175,11 @@ public static class Translator
             "Let’s look at the first result. The difference is quite clear.",
             "Let’s look at the first result. The difference is quite clear. We can scroll back through the complete bilingual transcript."
         };
-        foreach (var snapshot in snapshots)
+        for (int i = 0; i < snapshots.Length; i++)
         {
-            foreach (var update in segmenter.Update(snapshot))
+            foreach (var update in segmenter.Update(snapshots[i]))
                 await engine.AcceptAsync(update, "zh-CN", "Demo");
-            await Task.Delay(1700, token);
+            await Task.Delay(i == 0 ? 400 : 1700, token);
         }
     }
 }

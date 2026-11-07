@@ -2,19 +2,27 @@ using System.Text.RegularExpressions;
 
 namespace LiveCaptionsTranslator.transcript;
 
-public sealed record SegmentUpdate(long Key, int Revision, string Text, bool IsFinal);
+public sealed record SegmentUpdate(long Key, int Revision, string Text, bool IsFinal)
+{
+    public long ParagraphKey { get; init; }
+}
 
 /// <summary>Reconciles the rolling Live Captions text window, not translation results.</summary>
 public sealed class CaptionSegmenter
 {
     private List<SegmentUpdate> visible = new();
-    private readonly TimeSpan pauseInterval;
+    private TimeSpan pauseInterval;
     private DateTimeOffset lastChangedAt;
     private long nextKey;
     private string previous = "";
 
     public CaptionSegmenter(TimeSpan? pauseInterval = null) =>
         this.pauseInterval = pauseInterval ?? TimeSpan.FromMilliseconds(1200);
+
+    public void SealCurrent()
+    {
+        if (visible.Count > 0) visible[^1] = visible[^1] with { IsFinal = true };
+    }
 
     public void Reset() { visible.Clear(); previous = ""; }
 
@@ -25,11 +33,12 @@ public sealed class CaptionSegmenter
         if (snapshot == previous)
         {
             // Some Windows language models omit all punctuation. Seal a stable tail after
-            // a pause; a later extension becomes a new paragraph. This is not diarization.
+            // a pause; a later extension becomes a new translation fragment.
             if (visible.Count > 0 && !visible[^1].IsFinal && now - lastChangedAt >= pauseInterval)
                 visible[^1] = visible[^1] with { IsFinal = true };
             return Array.Empty<SegmentUpdate>();
         }
+        if (visible.Count > 0 && now - lastChangedAt >= pauseInterval) SealCurrent();
         previous = snapshot;
         lastChangedAt = now;
         if (snapshot.Length == 0) { visible.Clear(); return Array.Empty<SegmentUpdate>(); }
@@ -48,6 +57,7 @@ public sealed class CaptionSegmenter
                 var text = parts[j].Text;
                 if (old.Text == text) score += 10;
                 else if (j == 0 && old.IsFinal && old.Text.EndsWith(text, StringComparison.Ordinal)) score += 5;
+                else if (RevisionMatch(old.Text, text)) score += 6;
                 else if (start + j == visible.Count - 1 && (j > 0 || Similar(old.Text, text))) score += 2;
                 else break;
             }
@@ -65,12 +75,15 @@ public sealed class CaptionSegmenter
             {
                 if (i == 0 && old.Text.EndsWith(part.Text, StringComparison.Ordinal))
                     part = (old.Text, old.IsFinal); // leading text scrolled out of Windows' window
-                else if (offset + i != visible.Count - 1 || (i == 0 && !Similar(old.Text, part.Text)))
+                else if (!RevisionMatch(old.Text, part.Text) &&
+                    (offset + i != visible.Count - 1 || (i == 0 && !Similar(old.Text, part.Text))))
                 {
                     old = null;
                     matched = false;
                 }
             }
+            if (old != null && i == 0)
+                part = (PreserveRollingPrefix(old.Text, part.Text), part.Final);
             var item = old == null
                 ? new SegmentUpdate(++nextKey, 1, part.Text, part.Final)
                 : old.Text == part.Text && old.IsFinal == part.Final
@@ -80,6 +93,50 @@ public sealed class CaptionSegmenter
         }
         visible = next;
         return changes;
+    }
+
+    private static string PreserveRollingPrefix(string oldText, string text)
+    {
+        if (text.StartsWith(oldText, StringComparison.Ordinal) || oldText.StartsWith(text, StringComparison.Ordinal))
+            return text;
+        // The caption window can scroll in the middle of a long unpunctuated sentence.
+        // Retain words that scrolled off, while allowing corrections in the visible suffix.
+        for (int start = 1; start < oldText.Length; start++)
+        {
+            if (oldText[start - 1] != ' ') continue;
+            var suffix = oldText[start..];
+            if (suffix.Length < 8) continue;
+            if (text.StartsWith(suffix, StringComparison.Ordinal) &&
+                (text.Length == suffix.Length || char.IsWhiteSpace(text[suffix.Length]) || IsEnd(text[suffix.Length])))
+                return oldText[..start] + text;
+        }
+        // The visible suffix may contain a recognition correction, so a full suffix match
+        // is not always possible. Anchor its unchanged leading words in the retained text.
+        var head = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(3).ToArray();
+        if (head.Length == 3)
+        {
+            string anchor = string.Join(" ", head);
+            int start = oldText.IndexOf(anchor, StringComparison.Ordinal);
+            while (start >= 0)
+            {
+                if (start > 0 && oldText[start - 1] == ' ')
+                    return oldText[..start] + text;
+                start = oldText.IndexOf(anchor, start + 1, StringComparison.Ordinal);
+            }
+        }
+        return text;
+    }
+
+    // Windows can revise a completed sentence (for example "second" -> "2nd")
+    // while older lines scroll away. Match it together with its following sentences.
+    private static bool RevisionMatch(string a, string b)
+    {
+        var left = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var right = b.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        int count = Math.Min(left.Length, right.Length), prefix = 0;
+        while (prefix < count && string.Equals(left[prefix], right[prefix], StringComparison.OrdinalIgnoreCase)) prefix++;
+        return (count >= 3 && prefix >= 3) || (count >= 5 &&
+            left.Intersect(right, StringComparer.OrdinalIgnoreCase).Count() >= Math.Ceiling(count * 0.8));
     }
 
     private static bool Similar(string a, string b)

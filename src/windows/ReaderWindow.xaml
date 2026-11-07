@@ -33,6 +33,11 @@
       <Button Content="导出 CSV" Click="Export_Click" AutomationProperties.AutomationId="ReaderExport"/>
      </StackPanel>
     </WrapPanel>
+    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+     <TextBlock Text="每条长度" FontSize="12" VerticalAlignment="Center" Foreground="#9FB5C6" Margin="0,0,10,0"/>
+     <ComboBox x:Name="ParagraphLengthBox" Width="155" SelectionChanged="ParagraphLength_Changed"
+       AutomationProperties.AutomationId="ParagraphLength" ToolTip="短暂停顿自动合并，较长内容优先在句末或停顿处分段。"/>
+    </StackPanel>
     <TextBlock x:Name="StatusText" Text="正在载入历史记录…" Foreground="#9FB5C6" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap"/>
    </StackPanel>
   </Border>

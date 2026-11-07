@@ -248,6 +248,247 @@ await Test("Rolling unpunctuated captions retain the full sealed leading sentenc
     return Task.CompletedTask;
 });
 
+
+string Speech(int count, int start = 0) => string.Join(" ", Enumerable.Range(start, count).Select(i => "word" + i.ToString("D3")));
+Dictionary<long, SegmentUpdate> Capture(ParagraphSegmenter parser, params (string Text, double Seconds)[] snapshots)
+{
+    var result = new Dictionary<long, SegmentUpdate>();
+    var origin = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+    foreach (var snapshot in snapshots)
+        foreach (var update in parser.Update(snapshot.Text, origin.AddSeconds(snapshot.Seconds)))
+            result[update.Key] = update;
+    return result;
+}
+int WordCount(string text) => text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+IEnumerable<IGrouping<long, SegmentUpdate>> Groups(Dictionary<long, SegmentUpdate> items) =>
+    items.Values.OrderBy(i => i.Key).GroupBy(i => i.ParagraphKey);
+
+await Test("Natural paragraphs merge short sentences while translating each fragment", async () =>
+{
+    var parser = new ParagraphSegmenter();
+    string text = "Let us look at the first result. The difference is quite clear. Thank you.";
+    var updates = Capture(parser, (text, 0));
+    Check(Groups(updates).Count() == 1 && updates.Count >= 3, "Short sentences were not grouped");
+    var calls = new List<string>();
+    var store = NewStore("paragraph_short");
+    await using var engine = new TranscriptEngine(store, (s, _) => { calls.Add(s); return Task.FromResult("译：" + s); });
+    foreach (var update in updates.Values) await engine.AcceptAsync(update, "zh-CN", "Test");
+    await engine.WhenIdleAsync();
+    var rows = await store.ReadParagraphsBeforeAsync(null, 200);
+    var view = new ReaderEntry(rows[0]);
+    foreach (var row in rows.Skip(1)) view.Update(row);
+    Check(rows.All(r => r.GroupId == rows[0].Id) && view.Source == text, "Persistent paragraph pairing");
+    Check(calls.Count == updates.Count && !calls.Contains(text), "Entire growing paragraph was retranslated");
+});
+
+await Test("One to two second pauses below forty words stay in one paragraph", () =>
+{
+    var rows = Capture(new ParagraphSegmenter(),
+        ("First short thought", 0),
+        ("First short thought Second short thought", 2),
+        ("First short thought Second short thought Third short thought", 4));
+    Check(Groups(rows).Count() == 1 && rows.Count == 3, "Short pauses fragmented the reader");
+    return Task.CompletedTask;
+});
+await Test("Forty word sentence boundary closes a balanced paragraph", () =>
+{
+    var rows = Capture(new ParagraphSegmenter(), (Speech(40) + ".", 0), (Speech(40) + ". Another sentence.", 1));
+    Check(Groups(rows).Count() == 2 && WordCount(string.Join(" ", Groups(rows).First().Select(i => i.Text))) == 40, "Sentence boundary ignored");
+    return Task.CompletedTask;
+});
+await Test("Qualified 1.5 second pause closes a paragraph but 1.49 seconds does not", () =>
+{
+    string text = Speech(40);
+    var before = Capture(new ParagraphSegmenter(), (text, 0), (text + " continuation", 1.49));
+    var after = Capture(new ParagraphSegmenter(), (text, 0), (text, 1.5), (text + " continuation", 1.6));
+    Check(Groups(before).Count() == 1 && Groups(after).Count() == 2, "Pause threshold");
+    return Task.CompletedTask;
+});
+await Test("Eight second silence starts a new short paragraph without empty placeholder rows", () =>
+{
+    var parser = new ParagraphSegmenter();
+    var rows = Capture(parser, ("Short thought", 0), ("Short thought", 8),
+        ("Short thought Another thought", 8.1));
+    Check(Groups(rows).Count() == 2 && rows.Values.All(r => r.Text.Length > 0), "Long pause grouping");
+    var before = Capture(new ParagraphSegmenter(), ("Short thought", 0), ("Short thought Another thought", 7.9));
+    Check(Groups(before).Count() == 1, "Long pause fired too early");
+    return Task.CompletedTask;
+});
+await Test("Continuous unpunctuated speech is bounded at eighty words without loss", () =>
+{
+    string source = Speech(250);
+    var rows = Capture(new ParagraphSegmenter(), (source, 0));
+    var sizes = Groups(rows).Select(g => WordCount(string.Join(" ", g.Select(i => i.Text)))).ToArray();
+    Check(sizes.SequenceEqual(new[] { 80, 80, 80, 10 }), "Hard paragraph bound");
+    Check(string.Join(" ", rows.Values.OrderBy(i => i.Key).Select(i => i.Text)) == source, "Hard split lost or duplicated words");
+    return Task.CompletedTask;
+});
+await Test("Short and long presets apply their own bounds and survive serialization", () =>
+{
+    foreach (var (preset, limit) in new[] { (ParagraphLength.Short, 60), (ParagraphLength.Long, 120) })
+    {
+        var rows = Capture(new ParagraphSegmenter(preset), (Speech(limit + 10), 0));
+        Check(Groups(rows).Select(g => g.Sum(i => WordCount(i.Text))).SequenceEqual(new[] { limit, 10 }), "Preset bounds");
+        var setting = new ReaderWindowState { ParagraphLength = preset };
+        var json = System.Text.Json.JsonSerializer.Serialize(setting);
+        Check(System.Text.Json.JsonSerializer.Deserialize<ReaderWindowState>(json)!.ParagraphLength == preset, "Setting persistence");
+    }
+    Check(System.Text.Json.JsonSerializer.Deserialize<ReaderWindowState>("{}")!.ParagraphLength == ParagraphLength.Balanced, "Old setting default");
+    return Task.CompletedTask;
+});
+await Test("Recognition corrections keep fragment keys and paragraph assignments stable", () =>
+{
+    var parser = new ParagraphSegmenter();
+    var now = DateTimeOffset.UtcNow;
+    var initial = parser.Update(Speech(100), now).ToDictionary(i => i.Key);
+    string revised = Speech(100).Replace("word003", "corrected003").Replace("word095", "corrected095");
+    var updates = parser.Update(revised, now.AddMilliseconds(100));
+    Check(updates.Count == 2 && updates.All(u => initial.ContainsKey(u.Key) && initial[u.Key].ParagraphKey == u.ParagraphKey), "Correction regrouped old records");
+    return Task.CompletedTask;
+});
+await Test("Rolling drafts retain scrolled prefixes even when their visible tail is corrected", () =>
+{
+    var rows = Capture(new ParagraphSegmenter(),
+        (Speech(100), 0),
+        (Speech(100, 30).Replace("word095", "corrected095"), 0.5),
+        (Speech(100, 60).Replace("word095", "corrected095"), 1));
+    string expected = Speech(160).Replace("word095", "corrected095");
+    Check(string.Join(" ", rows.Values.OrderBy(i => i.Key).Select(i => i.Text)) == expected, "Rolling revision lost the leading words");
+    return Task.CompletedTask;
+});
+await Test("Repeated utterances remain present within and across natural paragraphs", () =>
+{
+    var rows = Capture(new ParagraphSegmenter(), ("Thank you", 0), ("Thank you Thank you", 2),
+        ("Thank you Thank you Thank you", 11));
+    Check(rows.Count == 3 && Groups(rows).Count() == 2 && rows.Values.All(i => i.Text == "Thank you"), "Repeated text lost");
+    return Task.CompletedTask;
+});
+await Test("Only the growing translation fragment changes when more words arrive", () =>
+{
+    var parser = new ParagraphSegmenter();
+    var now = DateTimeOffset.UtcNow;
+    var first = parser.Update(Speech(25), now);
+    var next = parser.Update(Speech(29), now.AddMilliseconds(100));
+    Check(first.Count == 2 && next.Count == 1 && next[0].Key == first[1].Key, "Stable fragment was resubmitted");
+    Check(parser.Update(Speech(29), now.AddMilliseconds(200)).Count == 0, "Unchanged text resubmitted");
+    return Task.CompletedTask;
+});
+await Test("Service changes start a new paragraph without duplicating the earlier source", () =>
+{
+    var parser = new ParagraphSegmenter();
+    parser.SetContext("zh-CN|Google");
+    var now = DateTimeOffset.UtcNow;
+    var first = parser.Update("Original words", now);
+    parser.SetContext("ja|DeepL");
+    var next = parser.Update("Original words new language words", now.AddMilliseconds(100));
+    Check(first.Count == 1 && next.Count == 1 && first[0].ParagraphKey != next[0].ParagraphKey, "Service change reused paragraph");
+    Check(next[0].Text == "new language words", "Service change duplicated source");
+    return Task.CompletedTask;
+});
+await Test("Paragraph view retains successful translations beside failures and late revisions", async () =>
+{
+    var store = NewStore("paragraph_partial");
+    var first = await store.CreateAsync("First sentence.", "zh-CN", "Test", "第一句。");
+    var failed = await store.CreateAsync("Second sentence.", "zh-CN", "Test", "[ERROR] offline", first.GroupId);
+    var pending = await store.CreateAsync("Third sentence.", "zh-CN", "Test", paragraphId: first.GroupId);
+    var view = new ReaderEntry(first);
+    view.Update(failed); view.Update(pending);
+    Check(view.DisplayTranslation.Contains("第一句") && view.Status.Contains("部分内容翻译失败") && view.Status.Contains("补充"), "A failing part blanked the whole translation");
+    view.Update(pending with { Version = 3, TranslatedText = "第三句。" });
+    view.Update(pending);
+    Check(view.DisplayTranslation.Contains("第三句") && view.CopyText.Contains("Second sentence."), "Late notification or copy lost content");
+});
+await Test("Out-of-order results stay in their original paragraph and preserve job language", async () =>
+{
+    var store = NewStore("paragraph_oo");
+    var firstDone = Completion(); var secondDone = Completion();
+    var seen = new List<string>();
+    await using var engine = new TranscriptEngine(store, (_, _) => Task.FromResult("unused"), concurrency: 2,
+        entryTranslator: (entry, _) => { seen.Add(entry.TargetLanguage + "|" + entry.ApiUsed); return entry.SourceText == "First." ? firstDone.Task : secondDone.Task; });
+    await engine.AcceptAsync(new(1, 1, "First.", true) { ParagraphKey = 1 }, "zh-CN", "Google");
+    await engine.AcceptAsync(new(2, 1, "Second.", true) { ParagraphKey = 2 }, "ja", "DeepL");
+    secondDone.SetResult("二番目"); firstDone.SetResult("第一句");
+    await engine.WhenIdleAsync();
+    var rows = await store.ReadParagraphsBeforeAsync(null, 10);
+    Check(rows.Select(r => r.GroupId).Distinct().Count() == 2 && rows[0].TranslatedText == "第一句" && rows[1].TranslatedText == "二番目", "Paragraph mismatch");
+    Check(seen.SequenceEqual(new[] { "zh-CN|Google", "ja|DeepL" }), "Translation job metadata changed");
+});
+await Test("Paragraph cursor pagination returns complete groups during new fragment inserts", async () =>
+{
+    var store = NewStore("paragraph_pages");
+    for (int i = 1; i <= 215; i++)
+    {
+        var first = await store.CreateAsync("Paragraph " + i + " first", "zh-CN", "Test", "译一");
+        await store.CreateAsync("second", "zh-CN", "Test", "译二", first.GroupId);
+    }
+    var recent = await store.ReadParagraphsBeforeAsync(null, 200);
+    var currentId = recent.Last().GroupId;
+    await store.CreateAsync("third", "zh-CN", "Test", "译三", currentId);
+    var earlier = await store.ReadParagraphsBeforeAsync(recent[0].GroupId, 100);
+    Check(recent.Count == 400 && recent.Select(r => r.GroupId).Distinct().Count() == 200, "Page counted fragments");
+    Check(earlier.Count == 30 && earlier.Select(r => r.GroupId).Distinct().Count() == 15, "Earlier groups missing");
+    Check(!recent.Select(r => r.GroupId).Intersect(earlier.Select(r => r.GroupId)).Any(), "Page overlap");
+    Check((await store.ReadParagraphAsync(currentId)).Count == 3, "New fragment lost");
+});
+await Test("Paragraph export uses original columns and restart recovers group ids", async () =>
+{
+    string path = Path.Combine(root, "paragraph_export.db");
+    var store = new HistoryStore(path);
+    var a = await store.CreateAsync("First, \"quoted\" sentence.", "zh-CN", "Test", "第一句。");
+    await store.CreateAsync("Second sentence.", "zh-CN", "Test", "第二句。", a.GroupId);
+    await store.CreateAsync("Next paragraph.", "zh-CN", "Test", "下一段。");
+    store = new HistoryStore(path);
+    var rows = await store.ReadParagraphsBeforeAsync(null, 10);
+    Check(rows.Count == 3 && rows[0].GroupId == rows[1].GroupId && rows[2].GroupId != rows[0].GroupId, "Restart regrouped records");
+    string csvPath = Path.Combine(root, "paragraphs.csv");
+    await store.ExportAsync(csvPath);
+    using var input = new StreamReader(csvPath);
+    using var csv = new CsvReader(input, CultureInfo.InvariantCulture);
+    var exported = csv.GetRecords<TranslationHistoryEntry>().ToList();
+    Check(exported.Count == 2 && exported[0].SourceText.Contains("Second sentence.") && exported[0].TranslatedText == "第一句。 第二句。", "CSV grouping");
+    Check(csv.HeaderRecord!.Length == 5, "CSV columns changed");
+});
+await Test("Old history rows remain independent after the paragraph migration", async () =>
+{
+    string path = Path.Combine(root, "legacy_paragraphs.db");
+    using (var connection = new SqliteConnection("Data Source=" + path))
+    {
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"CREATE TABLE TranslationHistory (Id INTEGER PRIMARY KEY AUTOINCREMENT,Timestamp TEXT,
+            SourceText TEXT,TranslatedText TEXT,TargetLanguage TEXT,ApiUsed TEXT,Version INTEGER DEFAULT 0);
+            INSERT INTO TranslationHistory VALUES (1,'2025-01-01 10:00:00','Old first','旧一','zh-CN','Test',0),
+            (2,'2025-01-01 10:00:01','Old second','旧二','zh-CN','Test',0);";
+        command.ExecuteNonQuery();
+    }
+    var rows = await new HistoryStore(path).ReadParagraphsBeforeAsync(null, 10);
+    Check(rows.Count == 2 && rows[0].GroupId == 1 && rows[1].GroupId == 2 && rows.All(r => r.Version == 0), "Old history was merged");
+});
+await Test("Rolling window revisions of earlier completed sentences do not duplicate speech", () =>
+{
+    const string a = "Today we are reviewing the results from our recent experiment.";
+    const string b = "The first measurement shows a clear improvement while the second measurement remains stable.";
+    const string c = "We should compare these observations with the earlier data before making a final decision.";
+    const string d = "Our next step is to repeat the measurement with a fresh sample";
+    var parser = new ParagraphSegmenter();
+    var rows = Capture(parser, (a + " " + b + " " + c + " " + d, 0),
+        (b.Replace("second", "2nd") + " " + c + " " + d + " and record the result.", 1));
+    string actual = string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text));
+    string expected = a + " " + b.Replace("second", "2nd") + " " + c + " " + d + " and record the result.";
+    Check(actual == expected, "Earlier sentence correction was duplicated or lost: " + actual);
+    return Task.CompletedTask;
+});
+await Test("Recorded synthetic speech snapshots retain every recognized word without duplicates", () =>
+{
+    using var trace = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "long-speech.json")));
+    var snapshots = trace.RootElement.EnumerateArray().Select(s => (s.GetProperty("Text").GetString()!, s.GetProperty("Seconds").GetDouble())).ToArray();
+    var rows = Capture(new ParagraphSegmenter(), snapshots);
+    string actual = string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0));
+    string expected = System.Text.RegularExpressions.Regex.Replace(snapshots[^1].Item1, @"\s+", " ").Trim();
+    Check(actual == expected, "Captured speech lost or duplicated recognized words");
+    Check(Groups(rows).All(g => WordCount(string.Join(" ", g.Select(p => p.Text))) <= 80), "Captured speech exceeded paragraph limit");
+    return Task.CompletedTask;
+});
 Console.WriteLine($"Results: {passed} passed, {failures.Count} failed.");
 Console.WriteLine("Test data: " + root);
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;

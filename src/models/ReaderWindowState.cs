@@ -1,8 +1,11 @@
+using LiveCaptionsTranslator.transcript;
+
 namespace LiveCaptionsTranslator.models;
 
 public sealed class ReaderWindowState
 {
     public bool Topmost { get; set; } = true;
+    public ParagraphLength ParagraphLength { get; set; } = ParagraphLength.Balanced;
     public double Left { get; set; } = -1;
     public double Top { get; set; } = -1;
     public double Width { get; set; } = 560;
