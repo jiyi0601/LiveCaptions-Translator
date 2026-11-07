@@ -1,4 +1,6 @@
-﻿<div align="center">
+> **Personal fork: continuous bilingual reader.** An independent reader pairs each English paragraph with its translation, appends new speech at the bottom, and supports persistent scrollback and CSV export. [Chinese guide](docs/连续双语阅读窗.md) · [Validation](docs/验收记录.md). The upstream documentation and license are retained below.
+
+<div align="center">
 
 <img src="src/LiveCaptions-Translator.ico" width="128" height="128" alt="LiveCaptions-Translator Icon"/>
 

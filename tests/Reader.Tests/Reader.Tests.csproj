@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+ <ItemGroup>
+  <Compile Include="../../src/transcript/CaptionSegmenter.cs" Link="CaptionSegmenter.cs"/>
+  <Compile Include="../../src/transcript/TranscriptEngine.cs" Link="TranscriptEngine.cs"/>
+  <Compile Include="../../src/transcript/HistoryStore.cs" Link="HistoryStore.cs"/>
+  <Compile Include="../../src/transcript/ReaderEntry.cs" Link="ReaderEntry.cs"/>
+  <Compile Include="../../src/models/TranslationHistoryEntry.cs" Link="TranslationHistoryEntry.cs"/>
+  <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.1"/>
+  <PackageReference Include="CsvHelper" Version="33.0.1"/>
+ </ItemGroup>
+</Project>

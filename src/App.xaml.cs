@@ -1,28 +1,28 @@
-﻿using System.Windows;
-
+using System.Windows;
 using LiveCaptionsTranslator.utils;
+namespace LiveCaptionsTranslator;
 
-namespace LiveCaptionsTranslator
+public partial class App : Application
 {
-    public partial class App : Application
+    public App()
     {
-        App()
+        RuntimeOptions.Initialize(Environment.GetCommandLineArgs());
+        Translator.Setting.Save();
+        Translator.Start();
+    }
+    protected override void OnExit(ExitEventArgs e)
+    {
+        Translator.StopAsync().GetAwaiter().GetResult();
+        Translator.Setting.Save();
+        if (Translator.Window != null)
         {
-            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
-            Translator.Setting?.Save();
-
-            Task.Run(() => Translator.SyncLoop());
-            Task.Run(() => Translator.TranslateLoop());
-            Task.Run(() => Translator.DisplayLoop());
-        }
-
-        private static void OnProcessExit(object sender, EventArgs e)
-        {
-            if (Translator.Window != null)
+            try
             {
                 LiveCaptionsHandler.RestoreLiveCaptions(Translator.Window);
                 LiveCaptionsHandler.KillLiveCaptions(Translator.Window);
             }
+            catch { /* Captions may already have been closed by the user. */ }
         }
+        base.OnExit(e);
     }
 }

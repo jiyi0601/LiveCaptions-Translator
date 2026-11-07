@@ -1,3 +1,5 @@
+> **个人 Fork · 连续双语阅读版**：默认打开独立阅读窗，逐段显示英文和中文，新记录从底部追加，支持永久历史、回看、复制和 CSV 导出。[中文使用与构建说明](docs/连续双语阅读窗.md) · [验收记录](docs/验收记录.md)。以下保留原项目说明与版权信息。
+
 <div align="center">
 
 <img src="src/LiveCaptions-Translator.ico" width="128" height="128" alt="LiveCaptions Translator图标"/>

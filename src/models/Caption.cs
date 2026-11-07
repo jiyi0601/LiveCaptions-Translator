@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -22,7 +22,8 @@ namespace LiveCaptionsTranslator.models
         public string OriginalCaption { get; set; } = string.Empty;
         public string TranslatedCaption { get; set; } = string.Empty;
 
-        public Queue<TranslationHistoryEntry> Contexts { get; } = new(MAX_CONTEXTS);
+        public IReadOnlyList<TranslationHistoryEntry> Contexts { get; private set; } = Array.Empty<TranslationHistoryEntry>();
+        public void SetContexts(IEnumerable<TranslationHistoryEntry> entries) { Contexts = entries.ToArray(); OnPropertyChanged(nameof(DisplayLogCards)); OnPropertyChanged(nameof(OverlayPreviousTranslation)); }
 
         public IEnumerable<TranslationHistoryEntry> AwareContexts => GetPreviousContexts(Translator.Setting.NumContexts);
         public string AwareContextsCaption => GetPreviousText(Translator.Setting.NumContexts, TextType.Caption);

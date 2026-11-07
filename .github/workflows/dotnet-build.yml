@@ -3,11 +3,13 @@ name: CI/CD Pipeline
 on:
   push:
     branches:
-      - "*"
+      - "**"
     tags:
       - "v*"
     paths:
       - "src/**"
+      - "tests/**"
+      - "LiveCaptionsTranslator.csproj"
       - "Properties/**"
       - ".github/workflows/**"
   pull_request:
@@ -48,7 +50,7 @@ jobs:
           del ./publish/arm64/framework/*.pdb 2>nul || echo "No pdb found in arm64 framework"
 
       - name: Run Tests
-        run: dotnet test --verbosity normal
+        run: dotnet run --project tests/Reader.Tests/Reader.Tests.csproj -c Release
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

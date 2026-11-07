@@ -1,15 +1,14 @@
-﻿using CsvHelper.Configuration.Attributes;
+using CsvHelper.Configuration.Attributes;
+namespace LiveCaptionsTranslator.models;
 
-namespace LiveCaptionsTranslator.models
+public record TranslationHistoryEntry
 {
-    public class TranslationHistoryEntry
-    {
-        public required string Timestamp { get; set; }
-        [Ignore]
-        public required string TimestampFull { get; set; }
-        public required string SourceText { get; set; }
-        public required string TranslatedText { get; set; }
-        public required string TargetLanguage { get; set; }
-        public required string ApiUsed { get; set; }
-    }
+    [Ignore] public long Id { get; init; }
+    [Ignore] public long Version { get; init; }
+    public required string Timestamp { get; init; }
+    [Ignore] public required string TimestampFull { get; init; }
+    public required string SourceText { get; init; }
+    public required string TranslatedText { get; init; }
+    public required string TargetLanguage { get; init; }
+    public required string ApiUsed { get; init; }
 }

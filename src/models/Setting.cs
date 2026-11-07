@@ -12,6 +12,7 @@ namespace LiveCaptionsTranslator.models
     public class Setting : INotifyPropertyChanged
     {
         public static readonly string FILENAME = "setting.json";
+        public ReaderWindowState ReaderWindow { get; set; } = new();
 
         public event PropertyChangedEventHandler? PropertyChanged;
 

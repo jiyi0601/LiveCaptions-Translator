@@ -1,0 +1,85 @@
+<Window x:Class="LiveCaptionsTranslator.ReaderWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="连续双语阅读 · LiveCaptions Translator" Width="560" Height="720" MinWidth="400" MinHeight="340"
+ Background="#101820" Foreground="#E8EEF4" FontFamily="Microsoft YaHei UI" Topmost="True"
+ WindowStartupLocation="Manual" Loaded="Window_Loaded" Closing="Window_Closing" PreviewKeyDown="Transcript_KeyDown">
+ <Window.Resources>
+  <BooleanToVisibilityConverter x:Key="BoolVisibility"/>
+  <Style TargetType="Button">
+   <Setter Property="Background" Value="#223240"/><Setter Property="Foreground" Value="#E8EEF4"/>
+   <Setter Property="BorderBrush" Value="#365064"/><Setter Property="Padding" Value="10,5"/>
+   <Setter Property="Margin" Value="3,0"/><Setter Property="Cursor" Value="Hand"/>
+  </Style>
+  <Style x:Key="ReadOnlyText" TargetType="TextBox">
+   <Setter Property="IsReadOnly" Value="True"/><Setter Property="TextWrapping" Value="Wrap"/>
+   <Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
+   <Setter Property="Padding" Value="0"/><Setter Property="IsReadOnlyCaretVisible" Value="False"/>
+   <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+   <Setter Property="VerticalScrollBarVisibility" Value="Disabled"/>
+   <Setter Property="SelectionBrush" Value="#477E9B"/>
+  </Style>
+ </Window.Resources>
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Border Padding="16,14,16,12" BorderBrush="#283B4B" BorderThickness="0,0,0,1">
+   <StackPanel>
+    <WrapPanel>
+     <TextBlock Text="连续双语阅读" FontWeight="SemiBold" FontSize="20" VerticalAlignment="Center" Margin="0,0,14,8"/>
+     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+      <Button x:Name="PinButton" Content="已置顶" Click="Pin_Click" AutomationProperties.AutomationId="ReaderPin"/>
+      <Button Content="A−" Click="Smaller_Click" ToolTip="减小字号"/>
+      <Button Content="A+" Click="Larger_Click" ToolTip="增大字号"/>
+      <Button Content="导出 CSV" Click="Export_Click" AutomationProperties.AutomationId="ReaderExport"/>
+     </StackPanel>
+    </WrapPanel>
+    <TextBlock x:Name="StatusText" Text="正在载入历史记录…" Foreground="#9FB5C6" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap"/>
+   </StackPanel>
+  </Border>
+  <Grid Grid.Row="1">
+   <ListBox x:Name="TranscriptList" Background="Transparent" BorderThickness="0" Padding="12,6"
+      HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+      ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="True"
+      VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+      VirtualizingPanel.ScrollUnit="Pixel" VirtualizingPanel.CacheLength="1"
+      ScrollViewer.ScrollChanged="Transcript_ScrollChanged" PreviewMouseWheel="Transcript_MouseWheel"
+      AutomationProperties.AutomationId="TranscriptList">
+    <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem">
+     <Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0,0,0,8"/>
+     <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+     <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+      <ContentPresenter/>
+     </ControlTemplate></Setter.Value></Setter>
+    </Style></ListBox.ItemContainerStyle>
+    <ListBox.ItemTemplate><DataTemplate>
+     <Border Background="#17232F" BorderBrush="#2B4051" BorderThickness="1" CornerRadius="9" Padding="14,10,14,13">
+      <StackPanel>
+       <DockPanel Margin="0,0,0,8">
+        <Button Content="复制双语" DockPanel.Dock="Right" Click="Copy_Click" FontSize="11" Padding="7,2" Margin="12,0,0,0"/>
+        <TextBlock Text="{Binding Time}" Foreground="#8CA5B9" FontSize="11" VerticalAlignment="Center"/>
+       </DockPanel>
+       <TextBox Text="{Binding Source, Mode=OneWay}" Style="{StaticResource ReadOnlyText}" Foreground="#BBCBD7"
+          FontSize="{Binding OriginalFontSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
+       <TextBox Text="{Binding DisplayTranslation, Mode=OneWay}" Style="{StaticResource ReadOnlyText}"
+          Foreground="#F2F7FA" Margin="0,7,0,0"
+          FontSize="{Binding TranslatedFontSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
+       <TextBlock Text="{Binding Status}" Foreground="#E2B86A" FontSize="12" TextWrapping="Wrap"
+          Visibility="{Binding HasStatus, Converter={StaticResource BoolVisibility}}"/>
+      </StackPanel>
+     </Border>
+    </DataTemplate></ListBox.ItemTemplate>
+   </ListBox>
+   <TextBlock x:Name="EmptyText" Text="播放 Zoom 会议或其他英语音频，&#10;原文和译文会逐段出现在这里。"
+      Foreground="#9FB5C6" TextAlignment="Center" HorizontalAlignment="Center" VerticalAlignment="Center"
+      IsHitTestVisible="False" FontSize="15"/>
+   <Button x:Name="LatestButton" Content="↓ 回到最新" Visibility="Collapsed" VerticalAlignment="Bottom"
+      HorizontalAlignment="Center" Margin="0,0,0,18" Padding="18,8" Click="Latest_Click"
+      Background="#267C99" AutomationProperties.AutomationId="ReaderLatest"/>
+  </Grid>
+  <Border Grid.Row="2" Padding="16,8" Background="#13202B" BorderBrush="#283B4B" BorderThickness="0,1,0,0">
+   <DockPanel><TextBlock x:Name="CountText" Text="0 条记录" Foreground="#9FB5C6" FontSize="11" DockPanel.Dock="Left"/>
+    <TextBlock x:Name="FollowText" Text="自动跟随最新" Foreground="#8FCBBB" FontSize="11" HorizontalAlignment="Right"/>
+   </DockPanel>
+  </Border>
+ </Grid>
+</Window>

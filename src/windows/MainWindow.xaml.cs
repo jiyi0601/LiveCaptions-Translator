@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Reflection;
 using System.Windows;
 using Wpf.Ui.Appearance;
@@ -14,6 +14,19 @@ namespace LiveCaptionsTranslator
     {
         public OverlayWindow? OverlayWindow { get; set; } = null;
         public bool IsAutoHeight { get; set; } = true;
+        private ReaderWindow? readerWindow;
+        private void ReaderButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (readerWindow != null) { readerWindow.Close(); return; }
+            ShowReader();
+        }
+        private void ShowReader()
+        {
+            if (readerWindow != null) { readerWindow.Activate(); return; }
+            readerWindow = new ReaderWindow();
+            readerWindow.Closed += (_, _) => readerWindow = null;
+            readerWindow.Show();
+        }
 
         public MainWindow()
         {
@@ -26,7 +39,7 @@ namespace LiveCaptionsTranslator
                 RootNavigation.Navigate(typeof(CaptionPage));
                 IsAutoHeight = true;
                 CheckForFirstUse();
-                CheckForUpdates();
+                ShowReader();
             };
 
             double screenWidth = SystemParameters.PrimaryScreenWidth;

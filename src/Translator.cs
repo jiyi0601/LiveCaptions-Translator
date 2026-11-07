@@ -1,360 +1,164 @@
-﻿using System.Diagnostics;
-using System.IO;
-using System.Text;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+using System.Windows;
 using System.Windows.Automation;
-
 using LiveCaptionsTranslator.apis;
 using LiveCaptionsTranslator.models;
+using LiveCaptionsTranslator.transcript;
 using LiveCaptionsTranslator.utils;
 
-namespace LiveCaptionsTranslator
+namespace LiveCaptionsTranslator;
+
+public static class Translator
 {
-    public static class Translator
+    public static AutomationElement? Window { get; set; }
+    public static Caption Caption { get; } = Caption.GetInstance();
+    public static Setting Setting { get; } = Setting.Load();
+    public static bool LogOnlyFlag { get; set; }
+    public static bool FirstUseFlag { get; set; }
+    public static event Action? TranslationLogged;
+    public static event Action<TranslationHistoryEntry>? TranscriptChanged;
+    public static event Action<string>? CaptureStatusChanged;
+    private static readonly CaptionSegmenter segmenter = new();
+    private static readonly CancellationTokenSource stopping = new();
+    private static readonly SortedDictionary<long, TranslationHistoryEntry> context = new();
+    private static readonly TranscriptEngine engine = new(SQLiteHistoryLogger.Store, TranslateTextAsync);
+    private static long latestId;
+    private static Task? captureTask;
+    public static string CaptureStatus { get; private set; } = "正在连接 Windows 实时字幕…";
+
+    static Translator()
     {
-        private static AutomationElement? window = null;
-        private static Caption? caption = null;
-        private static Setting? setting = null;
-
-        private static readonly Queue<string> pendingTextQueue = new();
-        private static readonly TranslationTaskQueue translationTaskQueue = new();
-
-        public static AutomationElement? Window
+        FirstUseFlag = !RuntimeOptions.Demo && !System.IO.File.Exists(System.IO.Path.Combine(RuntimeOptions.DataDirectory, Setting.FILENAME));
+        engine.Changed += EntryChanged;
+        SQLiteHistoryLogger.HistoryCleared += () =>
         {
-            get => window;
-            set => window = value;
-        }
-        public static Caption? Caption => caption;
-        public static Setting? Setting => setting;
-
-        public static bool LogOnlyFlag { get; set; } = false;
-        public static bool FirstUseFlag { get; set; } = false;
-
-        public static event Action? TranslationLogged;
-
-        static Translator()
+            _ = engine.ResetAsync();
+            lock (segmenter) segmenter.Reset();
+            Application.Current.Dispatcher.BeginInvoke(() => { context.Clear(); ClearContexts(); });
+        };
+        if (!RuntimeOptions.Demo)
         {
-            window = LiveCaptionsHandler.LaunchLiveCaptions();
+            Window = LiveCaptionsHandler.LaunchLiveCaptions();
             LiveCaptionsHandler.FixLiveCaptions(Window);
-            LiveCaptionsHandler.HideLiveCaptions(Window);
-
-            if (!File.Exists(Path.Combine(Directory.GetCurrentDirectory(), models.Setting.FILENAME)))
-                FirstUseFlag = true;
-
-            caption = Caption.GetInstance();
-            setting = Setting.Load();
+            if (!FirstUseFlag) LiveCaptionsHandler.HideLiveCaptions(Window);
         }
+    }
+    public static void Start() => captureTask = Task.Run(() => RuntimeOptions.Demo ? RunDemoAsync(stopping.Token) : SyncLoopAsync());
 
-        public static void SyncLoop()
+    public static async Task StopAsync()
+    {
+        stopping.Cancel();
+        if (captureTask != null)
         {
-            int idleCount = 0;
-            int syncCount = 0;
-
-            while (true)
+            try { await captureTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        }
+        await engine.DisposeAsync().ConfigureAwait(false);
+    }
+    private static void SetStatus(string message)
+    {
+        if (CaptureStatus == message) return;
+        CaptureStatus = message;
+        CaptureStatusChanged?.Invoke(message);
+    }
+    private static async Task SyncLoopAsync()
+    {
+        while (!stopping.IsCancellationRequested)
+        {
+            try
             {
                 if (Window == null)
                 {
-                    Thread.Sleep(2000);
-                    continue;
+                    Window = LiveCaptionsHandler.LaunchLiveCaptions();
+                    LiveCaptionsHandler.FixLiveCaptions(Window);
+                    LiveCaptionsHandler.HideLiveCaptions(Window);
+                    lock (segmenter) segmenter.Reset();
                 }
-
-                string fullText = string.Empty;
-                try
-                {
-                    // Check LiveCaptions.exe still alive
-                    var info = Window.Current;
-                    var name = info.Name;
-                    // Get the text recognized by LiveCaptions (10-20ms)
-                    fullText = LiveCaptionsHandler.GetCaptions(Window);
-                }
-                catch (ElementNotAvailableException)
-                {
-                    Window = null;
-                    continue;
-                }
-                if (string.IsNullOrEmpty(fullText))
-                    continue;
-
-                // Preprocess
+                string fullText = LiveCaptionsHandler.GetCaptions(Window);
                 fullText = RegexPatterns.Acronym().Replace(fullText, "$1$2");
                 fullText = RegexPatterns.AcronymWithWords().Replace(fullText, "$1 $2");
-                fullText = RegexPatterns.PunctuationSpace().Replace(fullText, "$1 ");
-                fullText = RegexPatterns.CJPunctuationSpace().Replace(fullText, "$1");
-                // Note: For certain languages (such as Japanese), LiveCaptions excessively uses `\n`.
-                // Replace redundant `\n` within sentences with comma or period.
-                fullText = TextUtil.ReplaceNewlines(fullText, TextUtil.MEDIUM_THRESHOLD);
-
-                // Prevent adding the last sentence from previous running to log cards
-                // before the first sentence is completed.
-                if (fullText.IndexOfAny(TextUtil.PUNC_EOS) == -1 && Caption.Contexts.Count > 0)
-                    ClearContexts();
-
-                // Get the last sentence.
-                int lastEOSIndex;
-                if (Array.IndexOf(TextUtil.PUNC_EOS, fullText[^1]) != -1)
-                    lastEOSIndex = fullText[0..^1].LastIndexOfAny(TextUtil.PUNC_EOS);
-                else
-                    lastEOSIndex = fullText.LastIndexOfAny(TextUtil.PUNC_EOS);
-                string latestCaption = fullText.Substring(lastEOSIndex + 1);
-
-                // If the last sentence is too short, extend it by adding the previous sentence.
-                // Note: LiveCaptions may generate multiple characters including EOS at once.
-                if (lastEOSIndex > 0 && Encoding.UTF8.GetByteCount(latestCaption) < TextUtil.SHORT_THRESHOLD)
-                {
-                    lastEOSIndex = fullText[0..lastEOSIndex].LastIndexOfAny(TextUtil.PUNC_EOS);
-                    latestCaption = fullText.Substring(lastEOSIndex + 1);
-                }
-
-                // `OverlayOriginalCaption`: The sentence to be displayed on Overlay Window.
-                Caption.OverlayOriginalCaption = latestCaption;
-                for (int historyCount = Math.Min(Setting.DisplaySentences, Caption.Contexts.Count);
-                     historyCount > 0 && lastEOSIndex > 0;
-                     historyCount--)
-                {
-                    lastEOSIndex = fullText[0..lastEOSIndex].LastIndexOfAny(TextUtil.PUNC_EOS);
-                    Caption.OverlayOriginalCaption = fullText.Substring(lastEOSIndex + 1);
-                }
-
-                // `DisplayOriginalCaption`: The sentence to be displayed on Main Window.
-                if (string.CompareOrdinal(Caption.DisplayOriginalCaption, latestCaption) != 0)
-                {
-                    Caption.DisplayOriginalCaption = latestCaption;
-                    // If the last sentence is too long, truncate it when displayed.
-                    Caption.DisplayOriginalCaption =
-                        TextUtil.ShortenDisplaySentence(Caption.DisplayOriginalCaption, TextUtil.VERYLONG_THRESHOLD);
-                }
-
-                // Prepare for `OriginalCaption`. If Expanded, only retain the complete sentence.
-                int lastEOS = latestCaption.LastIndexOfAny(TextUtil.PUNC_EOS);
-                if (lastEOS != -1)
-                    latestCaption = latestCaption.Substring(0, lastEOS + 1);
-                // `OriginalCaption`: The sentence to be really translated.
-                if (string.CompareOrdinal(Caption.OriginalCaption, latestCaption) != 0)
-                {
-                    Caption.OriginalCaption = latestCaption;
-
-                    idleCount = 0;
-                    if (Array.IndexOf(TextUtil.PUNC_EOS, Caption.OriginalCaption[^1]) != -1)
-                    {
-                        syncCount = 0;
-                        pendingTextQueue.Enqueue(Caption.OriginalCaption);
-                    }
-                    else if (Encoding.UTF8.GetByteCount(Caption.OriginalCaption) >= TextUtil.SHORT_THRESHOLD)
-                        syncCount++;
-                }
-                else
-                    idleCount++;
-
-                // `TranslateFlag` determines whether this sentence should be translated.
-                // When `OriginalCaption` remains unchanged, `idleCount` +1; when `OriginalCaption` changes, `MaxSyncInterval` +1.
-                if (syncCount > Setting.MaxSyncInterval ||
-                    idleCount == Setting.MaxIdleInterval)
-                {
-                    syncCount = 0;
-                    pendingTextQueue.Enqueue(Caption.OriginalCaption);
-                }
-
-                Thread.Sleep(25);
+                IReadOnlyList<SegmentUpdate> changes;
+                lock (segmenter) changes = segmenter.Update(fullText);
+                foreach (var update in changes)
+                    await engine.AcceptAsync(update, Setting.TargetLanguage, Setting.ApiName, LogOnlyFlag);
+                SetStatus(LogOnlyFlag ? "仅记录原文 · 翻译已暂停" : string.IsNullOrWhiteSpace(fullText)
+                    ? "正在聆听 · 等待电脑播放语音" : "实时记录中 · 英文在上，译文在下");
+            }
+            catch (ElementNotAvailableException) { Window = null; SetStatus("Windows 实时字幕已关闭，正在重新连接…"); }
+            catch (Exception ex) { SetStatus("字幕暂不可用：" + ex.Message); }
+            await Task.Delay(100, stopping.Token);
+        }
+    }
+    private static void EntryChanged(TranslationHistoryEntry entry)
+    {
+        TranscriptChanged?.Invoke(entry);
+        Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            latestId = Math.Max(latestId, entry.Id);
+            context[entry.Id] = entry;
+            while (context.Count > Caption.MAX_CONTEXTS + 1) context.Remove(context.Keys.First());
+            Caption.SetContexts(context.Values.Where(e => e.Id < latestId && !string.IsNullOrWhiteSpace(e.TranslatedText)));
+            if (entry.Id == latestId)
+            {
+                Caption.OriginalCaption = entry.SourceText;
+                Caption.DisplayOriginalCaption = entry.SourceText;
+                Caption.OverlayOriginalCaption = entry.SourceText;
+                Caption.TranslatedCaption = entry.TranslatedText;
+                Caption.DisplayTranslatedCaption = string.IsNullOrEmpty(entry.TranslatedText) ? "正在翻译…" : entry.TranslatedText;
+                Caption.OverlayCurrentTranslation = Caption.DisplayTranslatedCaption;
+                Caption.OverlayNoticePrefix = "";
+            }
+            TranslationLogged?.Invoke();
+        });
+    }
+    private static async Task<string> TranslateTextAsync(string text, CancellationToken token)
+    {
+        if (RuntimeOptions.Demo)
+        {
+            await Task.Delay(550, token);
+            return text.Contains("first result", StringComparison.OrdinalIgnoreCase) ? "我们来看第一个结果。"
+                : text.Contains("difference", StringComparison.OrdinalIgnoreCase) ? "这个差异非常明显。"
+                : "这是一段用于检查连续阅读界面的示例译文。";
+        }
+        var sw = Setting.MainWindow.LatencyShow ? Stopwatch.StartNew() : null;
+        string translated;
+        if (Setting.ContextAware && !TranslateAPI.IsLLMBased)
+        {
+            translated = await TranslateAPI.TranslateFunction(Caption.AwareContextsCaption + " 🔤 " + text + " 🔤", token);
+            if (!translated.Contains("[ERROR]"))
+            {
+                var match = RegexPatterns.TargetSentence().Match(translated);
+                if (match.Success) translated = match.Groups[1].Value;
             }
         }
-
-        public static async Task TranslateLoop()
+        else translated = await TranslateAPI.TranslateFunction(text, token);
+        translated = translated.Replace("🔤", "");
+        if (sw != null && !translated.Contains("[ERROR]")) translated = "[" + sw.ElapsedMilliseconds + " ms] " + translated;
+        return translated;
+    }
+    public static void ClearContexts()
+    {
+        context.Clear();
+        Caption.SetContexts(Array.Empty<TranslationHistoryEntry>());
+    }
+    private static async Task RunDemoAsync(CancellationToken token)
+    {
+        SetStatus("演示模式 · 示例数据，不采集音频");
+        if ((await SQLiteHistoryLogger.Store.ReadBeforeAsync(null, 1)).Count == 0)
+            for (int i = 1; i <= 215; i++)
+                await SQLiteHistoryLogger.Store.CreateAsync("Earlier discussion " + i + ": Please keep the original sentence together with its translation.",
+                    "zh-CN", "Demo", "较早的讨论 " + i + "：请把英文原文和对应译文保存在同一条记录中。");
+        await Task.Delay(1500, token);
+        string[] snapshots = {
+            "Let’s look at the first", "Let’s look at the first result.",
+            "Let’s look at the first result. The difference is quite clear.",
+            "Let’s look at the first result. The difference is quite clear. We can scroll back through the complete bilingual transcript."
+        };
+        foreach (var snapshot in snapshots)
         {
-            while (true)
-            {
-                // Check LiveCaptions.exe still alive
-                if (Window == null)
-                {
-                    Caption.DisplayTranslatedCaption = "[WARNING] LiveCaptions was unexpectedly closed, restarting...";
-                    Window = LiveCaptionsHandler.LaunchLiveCaptions();
-                    Caption.DisplayTranslatedCaption = "";
-                }
-
-                // Translate
-                if (pendingTextQueue.Count > 0)
-                {
-                    var originalSnapshot = pendingTextQueue.Dequeue();
-
-                    if (LogOnlyFlag)
-                    {
-                        bool isOverwrite = await IsOverwrite(originalSnapshot);
-                        await LogOnly(originalSnapshot, isOverwrite);
-                    }
-                    else
-                    {
-                        translationTaskQueue.Enqueue(token => Task.Run(
-                            () => Translate(originalSnapshot, token), token), originalSnapshot);
-                    }
-                }
-
-                Thread.Sleep(40);
-            }
-        }
-
-        public static async Task DisplayLoop()
-        {
-            while (true)
-            {
-                var (translatedText, isChoke) = translationTaskQueue.Output;
-
-                if (LogOnlyFlag)
-                {
-                    Caption.TranslatedCaption = string.Empty;
-                    Caption.DisplayTranslatedCaption = "[Paused]";
-                    Caption.OverlayNoticePrefix = "[Paused]";
-                    Caption.OverlayCurrentTranslation = string.Empty;
-                }
-                else if (!string.IsNullOrEmpty(RegexPatterns.NoticePrefix().Replace(
-                             translatedText, string.Empty).Trim()) &&
-                         string.CompareOrdinal(Caption.TranslatedCaption, translatedText) != 0)
-                {
-                    // Main page
-                    Caption.TranslatedCaption = translatedText;
-                    Caption.DisplayTranslatedCaption =
-                        TextUtil.ShortenDisplaySentence(Caption.TranslatedCaption, TextUtil.VERYLONG_THRESHOLD);
-
-                    // Overlay window
-                    if (Caption.TranslatedCaption.Contains("[ERROR]") || Caption.TranslatedCaption.Contains("[WARNING]"))
-                        Caption.OverlayCurrentTranslation = Caption.TranslatedCaption;
-                    else
-                    {
-                        var match = RegexPatterns.NoticePrefixAndTranslation().Match(Caption.TranslatedCaption);
-                        Caption.OverlayNoticePrefix = match.Groups[1].Value.Trim();
-                        Caption.OverlayCurrentTranslation = match.Groups[2].Value.Trim();
-                    }
-                }
-
-                // If the original sentence is a complete sentence, choke for better visual experience.
-                if (isChoke)
-                    Thread.Sleep(720);
-                Thread.Sleep(40);
-            }
-        }
-
-        public static async Task<(string, bool)> Translate(string text, CancellationToken token = default)
-        {
-            string translatedText;
-            bool isChoke = Array.IndexOf(TextUtil.PUNC_EOS, text[^1]) != -1;
-
-            try
-            {
-                var sw = Setting.MainWindow.LatencyShow ? Stopwatch.StartNew() : null;
-
-                if (Setting.ContextAware && !TranslateAPI.IsLLMBased)
-                {
-                    translatedText = await TranslateAPI.TranslateFunction($"{Caption.AwareContextsCaption} 🔤 {text} 🔤", token);
-                    translatedText = RegexPatterns.TargetSentence().Match(translatedText).Groups[1].Value;
-                }
-                else
-                {
-                    translatedText = await TranslateAPI.TranslateFunction(text, token);
-                    translatedText = translatedText.Replace("🔤", "");
-                }
-
-                if (sw != null)
-                {
-                    sw.Stop();
-                    translatedText = $"[{sw.ElapsedMilliseconds,4} ms] " + translatedText;
-                }
-            }
-            catch (OperationCanceledException ex)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                return ($"[ERROR] Translation Failed: {ex.Message}", isChoke);
-            }
-
-            return (translatedText, isChoke);
-        }
-
-        public static async Task Log(string originalText, string translatedText,
-            bool isOverwrite = false, CancellationToken token = default)
-        {
-            string targetLanguage, apiName;
-            if (Setting != null)
-            {
-                targetLanguage = Setting.TargetLanguage;
-                apiName = Setting.ApiName;
-            }
-            else
-            {
-                targetLanguage = "N/A";
-                apiName = "N/A";
-            }
-
-            try
-            {
-                if (isOverwrite)
-                    await SQLiteHistoryLogger.DeleteLastTranslation(token);
-                await SQLiteHistoryLogger.LogTranslation(originalText, translatedText, targetLanguage, apiName);
-                TranslationLogged?.Invoke();
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                SnackbarHost.Show("[ERROR] Logging history failed.", ex.Message, SnackbarType.Error,
-                    timeout: 2, closeButton: true);
-            }
-        }
-
-        public static async Task LogOnly(string originalText,
-            bool isOverwrite = false, CancellationToken token = default)
-        {
-            try
-            {
-                if (isOverwrite)
-                    await SQLiteHistoryLogger.DeleteLastTranslation(token);
-                await SQLiteHistoryLogger.LogTranslation(originalText, "N/A", "N/A", "LogOnly");
-                TranslationLogged?.Invoke();
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                SnackbarHost.Show("[ERROR] Logging history failed.", ex.Message, SnackbarType.Error,
-                    timeout: 2, closeButton: true);
-            }
-        }
-
-        public static async Task AddContexts(CancellationToken token = default)
-        {
-            var lastLog = await SQLiteHistoryLogger.LoadLastTranslation(token);
-            if (lastLog == null)
-                return;
-
-            if (Caption?.Contexts.Count >= Caption.MAX_CONTEXTS)
-                Caption.Contexts.Dequeue();
-            Caption?.Contexts.Enqueue(lastLog);
-
-            Caption?.OnPropertyChanged("DisplayLogCards");
-            Caption?.OnPropertyChanged("OverlayPreviousTranslation");
-        }
-
-        public static void ClearContexts()
-        {
-            Caption?.Contexts.Clear();
-
-            Caption?.OnPropertyChanged("DisplayLogCards");
-            Caption?.OnPropertyChanged("OverlayPreviousTranslation");
-        }
-
-        // If this text is too similar to the last one, overwrite it when logging.
-        public static async Task<bool> IsOverwrite(string originalText, CancellationToken token = default)
-        {
-            string lastOriginalText = await SQLiteHistoryLogger.LoadLastSourceText(token);
-            if (lastOriginalText == null)
-                return false;
-
-            int minLen = Math.Min(originalText.Length, lastOriginalText.Length);
-            originalText = originalText.Substring(0, minLen);
-            lastOriginalText = lastOriginalText.Substring(0, minLen);
-
-            double similarity = TextUtil.Similarity(originalText, lastOriginalText);
-            return similarity > TextUtil.SIM_THRESHOLD;
+            foreach (var update in segmenter.Update(snapshot))
+                await engine.AcceptAsync(update, "zh-CN", "Demo");
+            await Task.Delay(1700, token);
         }
     }
 }
