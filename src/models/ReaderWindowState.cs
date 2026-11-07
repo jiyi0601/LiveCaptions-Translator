@@ -6,6 +6,12 @@ public sealed class ReaderWindowState
 {
     public bool Topmost { get; set; } = true;
     public ParagraphLength ParagraphLength { get; set; } = ParagraphLength.Balanced;
+    private int paragraphPauseSeconds = ParagraphSegmenter.DefaultPauseSeconds;
+    public int ParagraphPauseSeconds
+    {
+        get => paragraphPauseSeconds;
+        set => paragraphPauseSeconds = ParagraphSegmenter.NormalizePauseSeconds(value);
+    }
     public double Left { get; set; } = -1;
     public double Top { get; set; } = -1;
     public double Width { get; set; } = 560;

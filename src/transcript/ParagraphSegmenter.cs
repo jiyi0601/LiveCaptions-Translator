@@ -14,6 +14,11 @@ public sealed class ParagraphSegmenter
     private long nextFragment, nextParagraph;
     private string? context;
     private const int FragmentWords = 20;
+    public const int DefaultPauseSeconds = 3;
+    public static IReadOnlyList<int> PauseOptions { get; } = Array.AsReadOnly(new[] { 2, 3, 5, 8, 12 });
+    public int PauseSeconds { get; private set; }
+    public static int NormalizePauseSeconds(int seconds) => PauseOptions.Contains(seconds) ? seconds : DefaultPauseSeconds;
+    public void SetPauseSeconds(int seconds) => PauseSeconds = NormalizePauseSeconds(seconds);
     public ParagraphLength Length { get; private set; }
     public (int Minimum, int Maximum) Limits => Length switch
     {
@@ -45,7 +50,11 @@ public sealed class ParagraphSegmenter
         public int Words;
     }
 
-    public ParagraphSegmenter(ParagraphLength length = ParagraphLength.Balanced) => SetLength(length);
+    public ParagraphSegmenter(ParagraphLength length = ParagraphLength.Balanced, int pauseSeconds = DefaultPauseSeconds)
+    {
+        SetLength(length);
+        SetPauseSeconds(pauseSeconds);
+    }
     public void SetLength(ParagraphLength length) =>
         Length = Enum.IsDefined(length) ? length : ParagraphLength.Balanced;
 
@@ -78,7 +87,7 @@ public sealed class ParagraphSegmenter
         if (current != null && lastContentAt.HasValue)
         {
             var idle = now - lastContentAt.Value;
-            if (idle >= TimeSpan.FromSeconds(8) ||
+            if (idle >= TimeSpan.FromSeconds(PauseSeconds) ||
                 (current.Words >= Limits.Minimum && idle >= TimeSpan.FromMilliseconds(1500)))
                 current.Closed = true;
         }

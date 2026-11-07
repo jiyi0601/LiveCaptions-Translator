@@ -33,11 +33,18 @@
       <Button Content="导出 CSV" Click="Export_Click" AutomationProperties.AutomationId="ReaderExport"/>
      </StackPanel>
     </WrapPanel>
-    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-     <TextBlock Text="每条长度" FontSize="12" VerticalAlignment="Center" Foreground="#9FB5C6" Margin="0,0,10,0"/>
-     <ComboBox x:Name="ParagraphLengthBox" Width="155" SelectionChanged="ParagraphLength_Changed"
-       AutomationProperties.AutomationId="ParagraphLength" ToolTip="短暂停顿自动合并，较长内容优先在句末或停顿处分段。"/>
-    </StackPanel>
+    <WrapPanel Margin="0,3,0,0">
+     <StackPanel Orientation="Horizontal" Margin="0,0,16,6">
+      <TextBlock Text="每条长度" FontSize="12" VerticalAlignment="Center" Foreground="#9FB5C6" Margin="0,0,10,0"/>
+      <ComboBox x:Name="ParagraphLengthBox" Width="155" SelectionChanged="ParagraphLength_Changed"
+        AutomationProperties.AutomationId="ParagraphLength" ToolTip="短暂停顿自动合并，较长内容优先在句末或停顿处分段。"/>
+     </StackPanel>
+     <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+      <TextBlock Text="停顿分段" FontSize="12" VerticalAlignment="Center" Foreground="#9FB5C6" Margin="0,0,10,0"/>
+      <ComboBox x:Name="ParagraphPauseBox" Width="125" SelectionChanged="ParagraphPause_Changed"
+        AutomationProperties.AutomationId="ParagraphPause" ToolTip="原文超过这段时间没有更新，下一次发言另起一条。已达到每条目标长度时，仍可在句末或约 1.5 秒停顿处分段。"/>
+     </StackPanel>
+    </WrapPanel>
     <TextBlock x:Name="StatusText" Text="正在载入历史记录…" Foreground="#9FB5C6" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap"/>
    </StackPanel>
   </Border>

@@ -10,6 +10,6 @@
   <Compile Include="../../src/models/TranslationHistoryEntry.cs" Link="TranslationHistoryEntry.cs"/>
   <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.1"/>
   <PackageReference Include="CsvHelper" Version="33.0.1"/>
-  <None Update="fixtures/long-speech.json" CopyToOutputDirectory="PreserveNewest"/>
+  <None Update="fixtures/*.json" CopyToOutputDirectory="PreserveNewest"/>
  </ItemGroup>
 </Project>

@@ -19,7 +19,7 @@ public static class Translator
     public static event Action? TranslationLogged;
     public static event Action<TranslationHistoryEntry>? TranscriptChanged;
     public static event Action<string>? CaptureStatusChanged;
-    private static readonly ParagraphSegmenter segmenter = new(Setting.ReaderWindow.ParagraphLength);
+    private static readonly ParagraphSegmenter segmenter = new(Setting.ReaderWindow.ParagraphLength, Setting.ReaderWindow.ParagraphPauseSeconds);
     private static readonly CancellationTokenSource stopping = new();
     private static readonly SortedDictionary<long, TranslationHistoryEntry> context = new();
     private static readonly TranscriptEngine engine = new(SQLiteHistoryLogger.Store, TranslateTextAsync, entryTranslator: TranslateEntryAsync);
@@ -149,6 +149,12 @@ public static class Translator
         translated = translated.Replace("🔤", "");
         if (sw != null && !translated.Contains("[ERROR]")) translated = "[" + sw.ElapsedMilliseconds + " ms] " + translated;
         return translated;
+    }
+    public static void SetParagraphPauseSeconds(int seconds)
+    {
+        lock (segmenter) segmenter.SetPauseSeconds(seconds);
+        Setting.ReaderWindow.ParagraphPauseSeconds = seconds;
+        Setting.Save();
     }
     public static void SetParagraphLength(ParagraphLength length)
     {

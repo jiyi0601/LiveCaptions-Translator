@@ -5,3 +5,5 @@ long-speech.json records the changing Windows Live Captions text produced by a f
 The passage describes an experiment, a repeat measurement, and a bilingual reading window. Windows revises earlier completed text (including "second" to "2nd") while extending the final sentence. The regression test checks that replayed fragments reproduce the final recognized caption exactly once, with stable paragraph grouping and the balanced length limit.
 
 The trace is only test input. The production application does not write this diagnostic trace.
+
+The delicious-speech.json fixture uses synthetic speech about curry, roast chicken, pizza, coffee and brunch, with a four second audio pause. It reproduces late punctuation and word revisions. Windows recognized coffee as coffee fee in this sample; the fixture retains this source recognition error. Both the 2 second and 3 second settings must reproduce the final caption without added or missing words.

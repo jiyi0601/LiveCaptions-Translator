@@ -7,11 +7,20 @@ public sealed record SegmentUpdate(long Key, int Revision, string Text, bool IsF
     public long ParagraphKey { get; init; }
 }
 
-/// <summary>Reconciles the rolling Live Captions text window, not translation results.</summary>
+/// <summary>Tracks word ownership across rolling captions and later punctuation changes.</summary>
 public sealed class CaptionSegmenter
 {
-    private List<SegmentUpdate> visible = new();
-    private TimeSpan pauseInterval;
+    private sealed class Segment(long key)
+    {
+        public long Key { get; } = key;
+        public int Revision;
+        public string Text = "";
+        public bool Final;
+    }
+    private sealed record Word(string Text, Segment Owner);
+    private sealed record Alignment(int Start, int End, int?[] Owners);
+    private readonly List<Word> words = new();
+    private readonly TimeSpan pauseInterval;
     private DateTimeOffset lastChangedAt;
     private long nextKey;
     private string previous = "";
@@ -21,180 +30,134 @@ public sealed class CaptionSegmenter
 
     public void SealCurrent()
     {
-        if (visible.Count > 0) visible[^1] = visible[^1] with { IsFinal = true };
+        if (words.Count > 0) words[^1].Owner.Final = true;
     }
 
-    public void Reset() { visible.Clear(); previous = ""; }
+    public void Reset() { words.Clear(); previous = ""; }
 
     public IReadOnlyList<SegmentUpdate> Update(string snapshot, DateTimeOffset? observedAt = null)
     {
         var now = observedAt ?? DateTimeOffset.UtcNow;
         snapshot = Regex.Replace(snapshot, @"\s+", " ").Trim();
-        if (snapshot == previous)
-        {
-            // Some Windows language models omit all punctuation. Seal a stable tail after
-            // a pause; a later extension becomes a new translation fragment.
-            if (visible.Count > 0 && !visible[^1].IsFinal && now - lastChangedAt >= pauseInterval)
-                visible[^1] = visible[^1] with { IsFinal = true };
-            return Array.Empty<SegmentUpdate>();
-        }
-        if (visible.Count > 0 && now - lastChangedAt >= pauseInterval) SealCurrent();
+        if (now - lastChangedAt >= pauseInterval) SealCurrent();
+        if (snapshot == previous) return Array.Empty<SegmentUpdate>();
         previous = snapshot;
         lastChangedAt = now;
-        if (snapshot.Length == 0) { visible.Clear(); return Array.Empty<SegmentUpdate>(); }
-        var parts = Split(snapshot);
-        var changes = new List<SegmentUpdate>();
-        var next = new List<SegmentUpdate>();
-        // A suffix of the previous window is the prefix of the new one.
-        // Prefer the earliest equal alignment so repeated sentences remain distinct.
-        int offset = -1, best = 0;
-        for (int start = 0; start < visible.Count; start++)
+        // A cleared source window is a real discontinuity, so identical later speech is new.
+        if (snapshot.Length == 0) { words.Clear(); return Array.Empty<SegmentUpdate>(); }
+
+        var incoming = snapshot.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var alignment = Align(incoming);
+        int start = alignment?.Start ?? words.Count;
+        int alignedEnd = alignment?.End ?? 0;
+        var owners = alignment?.Owners ?? new int?[incoming.Length];
+        // A completely rewritten unfinished tail is a revision, not a second utterance.
+        if (alignment == null && words.Count > 0 && !words[^1].Owner.Final)
         {
-            int score = 0;
-            for (int j = 0; j < parts.Count && start + j < visible.Count; j++)
+            var tail = words[^1].Owner;
+            start = words.FindLastIndex(w => w.Owner != tail) + 1;
+            for (int j = 0; j < incoming.Length; j++) owners[j] = start;
+            alignedEnd = incoming.Length;
+        }
+
+        var affected = words.Skip(start).Select(w => w.Owner).ToHashSet();
+        var replacement = new List<Word>();
+        Segment? last = start > 0 ? words[start - 1].Owner : null;
+        string lastWord = start > 0 ? words[start - 1].Text : "";
+        for (int j = 0; j < incoming.Length; j++)
+        {
+            Segment? owner = owners[j] is int index ? words[index].Owner : null;
+            if (owner == null && j < alignedEnd)
             {
-                var old = visible[start + j];
-                var text = parts[j].Text;
-                if (old.Text == text) score += 10;
-                else if (j == 0 && old.IsFinal && old.Text.EndsWith(text, StringComparison.Ordinal)) score += 5;
-                else if (RevisionMatch(old.Text, text)) score += 6;
-                else if (start + j == visible.Count - 1 && (j > 0 || Similar(old.Text, text))) score += 2;
-                else break;
+                // Insertions within known speech belong to an existing fragment.
+                // This keeps a newly inserted sentence boundary from shifting every later ID.
+                for (int k = j + 1; k < alignedEnd; k++)
+                    if (owners[k] is int next) { owner = words[next].Owner; break; }
+                owner ??= last;
             }
-            if (score > best) { best = score; offset = start; }
+            if (owner == null)
+                owner = last != null && !last.Final && !EndsSentence(lastWord)
+                    ? last : new Segment(++nextKey);
+            replacement.Add(new(incoming[j], owner));
+            affected.Add(owner);
+            last = owner;
+            lastWord = incoming[j];
         }
-        if (offset < 0 && visible.Count > 0 && !visible[^1].IsFinal)
-            offset = visible.Count - 1;
+        words.RemoveRange(start, words.Count - start);
+        words.AddRange(replacement);
 
-        bool matched = offset >= 0;
-        for (int i = 0; i < parts.Count; i++)
+        var textByOwner = words.GroupBy(w => w.Owner).ToDictionary(g => g.Key, g => string.Join(" ", g.Select(w => w.Text)));
+        var updates = new List<SegmentUpdate>();
+        foreach (var owner in affected.OrderBy(s => s.Key))
         {
-            var part = parts[i];
-            SegmentUpdate? old = matched && offset + i < visible.Count ? visible[offset + i] : null;
-            if (old != null && old.IsFinal && old.Text != part.Text)
+            string text = textByOwner.GetValueOrDefault(owner, "");
+            bool final = owner.Final || (text.Length > 0 && (owner != last || EndsSentence(text)));
+            if (owner.Text == text && owner.Final == final) continue;
+            owner.Text = text;
+            owner.Final = final;
+            updates.Add(new(owner.Key, ++owner.Revision, text, final));
+        }
+        return updates;
+    }
+
+    private Alignment? Align(string[] incoming)
+    {
+        if (words.Count == 0) return null;
+        // Only the recent window can overlap. Scrolled-out prefixes remain in their original owner.
+        int offset = Math.Max(0, words.Count - Math.Max(512, incoming.Length + 64));
+        int m = words.Count - offset, n = incoming.Length;
+        var old = words.Skip(offset).Select(w => Normalize(w.Text)).ToArray();
+        var current = incoming.Select(Normalize).ToArray();
+        int prefix = 0;
+        while (prefix < Math.Min(m, n) && old[prefix] == current[prefix]) prefix++;
+        var owners = new int?[n];
+        if (prefix == Math.Min(m, n))
+        {
+            for (int j = 0; j < prefix; j++) owners[j] = offset + j;
+            return new(offset, prefix, owners);
+        }
+        // Most ASR updates only change the last few words. Pin a long unchanged prefix
+        // so those updates do not allocate a quadratic matrix for the entire window.
+        int pinned = prefix >= 6 && prefix >= m / 2 ? prefix : 0;
+        for (int j = 0; j < pinned; j++) owners[j] = offset + j;
+        old = old[pinned..]; current = current[pinned..];
+        m -= pinned; n -= pinned;
+        var score = new int[m + 1, n + 1];
+        var direction = new byte[m + 1, n + 1];
+        if (pinned > 0)
+            for (int i = 1; i <= m; i++) { score[i, 0] = -3 * i; direction[i, 0] = 2; }
+        for (int j = 1; j <= n; j++) { score[0, j] = -3 * j; direction[0, j] = 3; }
+        for (int i = 1; i <= m; i++)
+            for (int j = 1; j <= n; j++)
             {
-                if (i == 0 && old.Text.EndsWith(part.Text, StringComparison.Ordinal))
-                    part = (old.Text, old.IsFinal); // leading text scrolled out of Windows' window
-                else if (!RevisionMatch(old.Text, part.Text) &&
-                    (offset + i != visible.Count - 1 || (i == 0 && !Similar(old.Text, part.Text))))
-                {
-                    old = null;
-                    matched = false;
-                }
+                int diagonal = score[i - 1, j - 1] + (old[i - 1] == current[j - 1] ? 5 : -3);
+                int deletion = score[i - 1, j] - 3;
+                int insertion = score[i, j - 1] - 3;
+                score[i, j] = Math.Max(diagonal, Math.Max(deletion, insertion));
+                direction[i, j] = score[i, j] == diagonal ? (byte)1 : score[i, j] == deletion ? (byte)2 : (byte)3;
             }
-            if (old != null && i == 0)
-                part = (PreserveRollingPrefix(old.Text, part.Text), part.Final);
-            var item = old == null
-                ? new SegmentUpdate(++nextKey, 1, part.Text, part.Final)
-                : old.Text == part.Text && old.IsFinal == part.Final
-                    ? old : old with { Text = part.Text, IsFinal = part.Final, Revision = old.Revision + 1 };
-            next.Add(item);
-            if (old == null || item != old) changes.Add(item);
-        }
-        visible = next;
-        return changes;
-    }
-
-    private static string PreserveRollingPrefix(string oldText, string text)
-    {
-        if (text.StartsWith(oldText, StringComparison.Ordinal) || oldText.StartsWith(text, StringComparison.Ordinal))
-            return text;
-        // The caption window can scroll in the middle of a long unpunctuated sentence.
-        // Retain words that scrolled off, while allowing corrections in the visible suffix.
-        for (int start = 1; start < oldText.Length; start++)
+        // Free old prefix = scrolling; free new suffix = genuinely new speech.
+        int end = 0;
+        for (int j = 1; j <= n; j++)
+            if (score[m, j] >= score[m, end]) end = j;
+        if (score[m, end] + pinned * 5 <= 0) return null;
+        int x = m, y = end, matches = pinned;
+        while (y > 0)
         {
-            if (oldText[start - 1] != ' ') continue;
-            var suffix = oldText[start..];
-            if (suffix.Length < 8) continue;
-            if (text.StartsWith(suffix, StringComparison.Ordinal) &&
-                (text.Length == suffix.Length || char.IsWhiteSpace(text[suffix.Length]) || IsEnd(text[suffix.Length])))
-                return oldText[..start] + text;
-        }
-        // The visible suffix may contain a recognition correction, so a full suffix match
-        // is not always possible. Anchor its unchanged leading words in the retained text.
-        var head = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(3).ToArray();
-        if (head.Length == 3)
-        {
-            string anchor = string.Join(" ", head);
-            int start = oldText.IndexOf(anchor, StringComparison.Ordinal);
-            while (start >= 0)
+            if (direction[x, y] == 1)
             {
-                if (start > 0 && oldText[start - 1] == ' ')
-                    return oldText[..start] + text;
-                start = oldText.IndexOf(anchor, start + 1, StringComparison.Ordinal);
+                owners[pinned + y - 1] = offset + pinned + x - 1;
+                if (old[x - 1] == current[y - 1]) matches++;
+                x--; y--;
             }
+            else if (direction[x, y] == 2) x--;
+            else y--;
         }
-        return text;
+        if (matches < Math.Min(3, Math.Min(m - x + pinned, end + pinned))) return null;
+        return new(pinned > 0 ? offset : offset + x, end + pinned, owners);
     }
 
-    // Windows can revise a completed sentence (for example "second" -> "2nd")
-    // while older lines scroll away. Match it together with its following sentences.
-    private static bool RevisionMatch(string a, string b)
-    {
-        var left = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var right = b.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        int count = Math.Min(left.Length, right.Length), prefix = 0;
-        while (prefix < count && string.Equals(left[prefix], right[prefix], StringComparison.OrdinalIgnoreCase)) prefix++;
-        return (count >= 3 && prefix >= 3) || (count >= 5 &&
-            left.Intersect(right, StringComparer.OrdinalIgnoreCase).Count() >= Math.Ceiling(count * 0.8));
-    }
-
-    private static bool Similar(string a, string b)
-    {
-        if (a.StartsWith(b, StringComparison.Ordinal) || b.StartsWith(a, StringComparison.Ordinal)) return true;
-        var left = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var right = b.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return left.Intersect(right, StringComparer.OrdinalIgnoreCase).Count() >=
-            Math.Max(1, Math.Min(left.Length, right.Length) / 2);
-    }
-
-    private static bool IsEnd(char c) => ".!?。！？".Contains(c);
-
-    private List<(string Text, bool Final)> Split(string text)
-    {
-        var boundaries = new SortedSet<int>();
-        for (int i = 0; i < text.Length; i++)
-        {
-            if (!IsEnd(text[i])) continue;
-            if (text[i] == '.' && i > 0 && i + 1 < text.Length &&
-                char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1])) continue;
-            if (i + 1 < text.Length && IsEnd(text[i + 1])) continue;
-            boundaries.Add(i + 1);
-        }
-
-        int searchFrom = 0;
-        foreach (var old in visible.Where(v => v.IsFinal && !IsEnd(v.Text[^1])))
-        {
-            int start = text.IndexOf(old.Text, searchFrom, StringComparison.Ordinal);
-            int end = start >= 0 ? start + old.Text.Length : -1;
-            if (end < 0 && searchFrom == 0)
-            {
-                // Windows may have discarded the start of an already sealed paragraph.
-                for (int i = 1; i < old.Text.Length; i++)
-                {
-                    if (old.Text[i - 1] != ' ') continue;
-                    if (text.StartsWith(old.Text[i..], StringComparison.Ordinal))
-                    {
-                        start = 0; end = old.Text.Length - i; break;
-                    }
-                }
-            }
-            if (end < 0 || (start > 0 && !char.IsWhiteSpace(text[start - 1]) && !IsEnd(text[start - 1]))) continue;
-            if (end < text.Length && !char.IsWhiteSpace(text[end])) continue;
-            boundaries.Add(end);
-            searchFrom = end;
-        }
-
-        var result = new List<(string, bool)>();
-        int begin = 0;
-        foreach (int end in boundaries)
-        {
-            var part = text[begin..end].Trim();
-            if (part.Length > 0) result.Add((part, true));
-            begin = end;
-        }
-        var tail = text[begin..].Trim();
-        if (tail.Length > 0) result.Add((tail, false));
-        return result;
-    }
+    private static string Normalize(string word) =>
+        Regex.Replace(word, @"[^\p{L}\p{Nd}]", "").ToUpperInvariant();
+    private static bool EndsSentence(string text) => Regex.IsMatch(text, "[.!?。！？][\\\"'”’)]*$");
 }

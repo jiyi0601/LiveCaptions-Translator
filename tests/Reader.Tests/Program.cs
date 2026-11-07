@@ -306,11 +306,11 @@ await Test("Qualified 1.5 second pause closes a paragraph but 1.49 seconds does 
 });
 await Test("Eight second silence starts a new short paragraph without empty placeholder rows", () =>
 {
-    var parser = new ParagraphSegmenter();
+    var parser = new ParagraphSegmenter(pauseSeconds: 8);
     var rows = Capture(parser, ("Short thought", 0), ("Short thought", 8),
         ("Short thought Another thought", 8.1));
     Check(Groups(rows).Count() == 2 && rows.Values.All(r => r.Text.Length > 0), "Long pause grouping");
-    var before = Capture(new ParagraphSegmenter(), ("Short thought", 0), ("Short thought Another thought", 7.9));
+    var before = Capture(new ParagraphSegmenter(pauseSeconds: 8), ("Short thought", 0), ("Short thought Another thought", 7.9));
     Check(Groups(before).Count() == 1, "Long pause fired too early");
     return Task.CompletedTask;
 });
@@ -489,6 +489,140 @@ await Test("Recorded synthetic speech snapshots retain every recognized word wit
     Check(Groups(rows).All(g => WordCount(string.Join(" ", g.Select(p => p.Text))) <= 80), "Captured speech exceeded paragraph limit");
     return Task.CompletedTask;
 });
+
+await Test("Late punctuation and apostrophe revisions do not repeat coffee or pizza", () =>
+{
+    string draft = "Delicious So tell me about something delicious from your weekend The green curry I ordered was delicious My moms roast chicken was delicious and my pizza was delicious My coffee was delicious It's a very useful word";
+    string final = "Delicious. So tell me about something delicious from your weekend. The green curry I ordered was delicious. My mom's roast chicken was delicious and my pizza was delicious. My coffee was delicious. It's a very useful word. It is okay next word.";
+    var rows = Capture(new ParagraphSegmenter(), (draft, 0), (final, 2));
+    Check(string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0)) == final, "Punctuation revisions duplicated or lost speech");
+    return Task.CompletedTask;
+});
+await Test("Changing sentence boundaries in a rolling window preserves each occurrence", () =>
+{
+    const string a = "My mom's roast chicken was delicious and my pizza was delicious";
+    const string b = "My coffee was delicious";
+    const string c = "It's a very useful word";
+    var rows = Capture(new ParagraphSegmenter(),
+        (a + " " + b + " " + c, 0),
+        (a + ". " + b + ". " + c + ". It", 0.5),
+        (b + ". " + c + ". It is okay next word. We talked about a special meal.", 1),
+        (c + ". It is okay next word. We talked about a special meal. Brunch brunch BRUNCH.", 1.5));
+    string expected = a + ". " + b + ". " + c + ". It is okay next word. We talked about a special meal. Brunch brunch BRUNCH.";
+    Check(string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0)) == expected, "Rolling punctuation shifted segment ownership");
+    return Task.CompletedTask;
+});
+
+
+await Test("Every pause preset uses its exact threshold and persists safely", () =>
+{
+    foreach (int seconds in ParagraphSegmenter.PauseOptions)
+    {
+        var before = Capture(new ParagraphSegmenter(pauseSeconds: seconds),
+            ("Short thought", 0), ("Short thought Another thought", seconds - 0.1));
+        var after = Capture(new ParagraphSegmenter(pauseSeconds: seconds),
+            ("Short thought", 0), ("Short thought Another thought", seconds));
+        Check(Groups(before).Count() == 1 && Groups(after).Count() == 2, "Wrong pause threshold: " + seconds);
+        var setting = new ReaderWindowState { ParagraphPauseSeconds = seconds };
+        string json = System.Text.Json.JsonSerializer.Serialize(setting);
+        Check(System.Text.Json.JsonSerializer.Deserialize<ReaderWindowState>(json)!.ParagraphPauseSeconds == seconds, "Pause was not saved");
+    }
+    Check(System.Text.Json.JsonSerializer.Deserialize<ReaderWindowState>("{}")!.ParagraphPauseSeconds == 3, "Upgrade default is not three seconds");
+    foreach (int invalid in new[] { -1, 0, 100 })
+        Check(new ReaderWindowState { ParagraphPauseSeconds = invalid }.ParagraphPauseSeconds == 3, "Invalid saved pause was not normalized");
+    return Task.CompletedTask;
+});
+await Test("Changing the pause preset takes effect without clearing existing speech", () =>
+{
+    var parser = new ParagraphSegmenter(pauseSeconds: 8);
+    var now = DateTimeOffset.UtcNow;
+    var first = parser.Update("First short thought", now).Single();
+    parser.SetPauseSeconds(2);
+    var next = parser.Update("First short thought Another thought", now.AddSeconds(2.1)).Single();
+    Check(first.Key != next.Key && first.ParagraphKey != next.ParagraphKey && next.Text == "Another thought", "Changing pause lost or duplicated the prefix");
+    return Task.CompletedTask;
+});
+await Test("Word insertions deletions and punctuation changes preserve source order", () =>
+{
+    var rows = Capture(new ParagraphSegmenter(),
+        ("My moms roast chicken was really very delicious and my pizza was delicious My coffee was delicious", 0),
+        ("My mom's roast chicken was very delicious. And my fresh pizza was delicious. My coffee was delicious.", 0.4),
+        ("My mom's roast chicken was delicious and my fresh pizza was delicious My coffee was delicious", 0.8));
+    const string expected = "My mom's roast chicken was delicious and my fresh pizza was delicious My coffee was delicious";
+    Check(string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0)) == expected, "Edit changed word ownership incorrectly");
+    return Task.CompletedTask;
+});
+await Test("Explicit repeated pizza and coffee utterances are retained", () =>
+{
+    const string repeated = "My pizza was delicious. My pizza was delicious. My coffee was delicious. My coffee was delicious.";
+    var rows = Capture(new ParagraphSegmenter(),
+        ("My pizza was delicious", 0), ("My pizza was delicious My pizza was delicious My coffee was delicious", 0.5),
+        (repeated, 1));
+    Check(string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0)) == repeated, "Real repeated speech was deduplicated");
+    return Task.CompletedTask;
+});
+await Test("Late sentence boundaries after a length split never move or duplicate the words", () =>
+{
+    var parser = new ParagraphSegmenter();
+    var now = DateTimeOffset.UtcNow;
+    var rows = parser.Update(Speech(130), now).ToDictionary(u => u.Key);
+    var groups = rows.ToDictionary(p => p.Key, p => p.Value.ParagraphKey);
+    string corrected = string.Join(" ", Speech(130).Split(' ').Select((w, i) => (i + 1) % 7 == 0 ? w + "." : w));
+    foreach (var update in parser.Update(corrected, now.AddMilliseconds(200)))
+    {
+        Check(groups[update.Key] == update.ParagraphKey, "Punctuation moved an existing fragment");
+        rows[update.Key] = update;
+    }
+    Check(string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text)) == corrected, "Punctuation duplicated words across paragraph boundary");
+    return Task.CompletedTask;
+});
+await Test("Unrelated completed windows append instead of overwriting past speech", () =>
+{
+    var rows = Capture(new ParagraphSegmenter(),
+        ("My cat is very quiet and my coffee was delicious.", 0),
+        ("The car is very fast and the pizza looks great.", 4));
+    Check(string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text)) ==
+        "My cat is very quiet and my coffee was delicious. The car is very fast and the pizza looks great.", "Unrelated words falsely matched");
+    return Task.CompletedTask;
+});
+
+
+await Test("Repeated vocabulary survives many overlapping rolling windows", () =>
+{
+    string full = string.Join(" ", Enumerable.Range(0, 36).Select(i =>
+        $"Topic{i} the coffee was delicious and the pizza was delicious"));
+    var tokens = full.Split(' ');
+    var snapshots = new List<(string, double)>();
+    for (int end = 4; end < tokens.Length; end += 4)
+    {
+        int start = Math.Max(0, end - 65);
+        string view = string.Join(" ", tokens[start..end].Select((w, i) =>
+            (start + i) % 11 == 10 ? w + "." : w));
+        snapshots.Add((view, end * 0.02));
+    }
+    snapshots.Add((string.Join(" ", tokens[^65..]), tokens.Length * 0.02));
+    var rows = Capture(new ParagraphSegmenter(), snapshots.ToArray());
+    string actual = string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0));
+    Check(actual.Replace(".", "") == full, "Overlapping repeated vocabulary duplicated or omitted speech");
+    return Task.CompletedTask;
+});
+
+
+await Test("Recorded delicious speech remains identical to raw captions at two and three second pauses", () =>
+{
+    using var trace = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "delicious-speech.json")));
+    var snapshots = trace.RootElement.EnumerateArray().Select(s => (s.GetProperty("Text").GetString()!, s.GetProperty("Seconds").GetDouble())).ToArray();
+    string expected = System.Text.RegularExpressions.Regex.Replace(snapshots[^1].Item1, @"\s+", " ").Trim();
+    foreach (int pause in new[] { 2, 3 })
+    {
+        var rows = Capture(new ParagraphSegmenter(pauseSeconds: pause), snapshots);
+        string actual = string.Join(" ", rows.Values.OrderBy(r => r.Key).Select(r => r.Text).Where(t => t.Length > 0));
+        Check(actual == expected, "Delicious speech differs from the source caption");
+        Check(Groups(rows).Count() == (pause == 2 ? 3 : 2), "Captured pause setting was not applied");
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"Results: {passed} passed, {failures.Count} failed.");
 Console.WriteLine("Test data: " + root);
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;

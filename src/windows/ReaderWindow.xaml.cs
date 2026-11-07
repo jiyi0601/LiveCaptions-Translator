@@ -33,6 +33,9 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
         ParagraphLengthBox.Items.Add(new ComboBoxItem { Content = "长（60–120 词）", Tag = ParagraphLength.Long });
         ParagraphLengthBox.SelectedItem = ParagraphLengthBox.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (ParagraphLength)i.Tag == saved.ParagraphLength);
         if (ParagraphLengthBox.SelectedItem == null) ParagraphLengthBox.SelectedIndex = 1;
+        foreach (int seconds in ParagraphSegmenter.PauseOptions)
+            ParagraphPauseBox.Items.Add(new ComboBoxItem { Content = seconds == ParagraphSegmenter.DefaultPauseSeconds ? seconds + " 秒（默认）" : seconds + " 秒", Tag = seconds });
+        ParagraphPauseBox.SelectedItem = ParagraphPauseBox.Items.Cast<ComboBoxItem>().First(i => (int)i.Tag == saved.ParagraphPauseSeconds);
         Width = Math.Clamp(saved.Width, MinWidth, Math.Max(MinWidth, SystemParameters.VirtualScreenWidth));
         Height = Math.Clamp(saved.Height, MinHeight, Math.Max(MinHeight, SystemParameters.VirtualScreenHeight));
         var desktop = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
@@ -202,6 +205,11 @@ public partial class ReaderWindow : Window, INotifyPropertyChanged
     private void Latest_Click(object sender, RoutedEventArgs e)
     {
         SetFollowing(true); SchedulePosition(null);
+    }
+    private void ParagraphPause_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (ParagraphPauseBox.SelectedItem is ComboBoxItem { Tag: int seconds })
+            Translator.SetParagraphPauseSeconds(seconds);
     }
     private void ParagraphLength_Changed(object sender, SelectionChangedEventArgs e)
     {
